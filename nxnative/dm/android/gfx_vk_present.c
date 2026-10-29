@@ -152,6 +152,7 @@ static VkFramebuffer ov_fb(uint32_t idx) {
     return g_ov.fb[idx];
 }
 static _Atomic uint64_t g_fps_frames;   // the game's frames shown (mtl_present), which the counter counts
+uint64_t dm_frames_shown(void) { return atomic_load(&g_fps_frames); }   // companion_android.c's frame rate
 static uint32_t ov_layout_sprites(uint32_t h) {   // places the sprites, returns the strip's height
     float x = 4, top = (float)h, mr = 0, disc = 0;
     for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_BUTTON && ov_r(&OV_CTLS[i]) * h > disc) disc = ov_r(&OV_CTLS[i]) * h;

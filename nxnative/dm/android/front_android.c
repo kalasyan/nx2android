@@ -82,8 +82,9 @@ static void hold_sync(void) {
 }
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(3); hold_sync(); dm_gfx_suspend(1); }
 static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); }
-static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
-static void on_resume(ANativeActivity *a) { (void)a; go_foreground(); }
+void dm_companion_start(ANativeActivity *act); void dm_companion_show(ANativeActivity *act, int on);   // companion_android.c: the second screen's page
+static void on_pause(ANativeActivity *a) { dm_companion_show(a, 0); go_background(); }
+static void on_resume(ANativeActivity *a) { dm_companion_show(a, 1); go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
 
 // ---- input ----
@@ -600,6 +601,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 #endif
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
+    dm_companion_start(act);   // after env.txt: DM_COMPANION=1 turns it on
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
     if (asked) { LOG("no data pack in %s: asked for all files access to look for one in " SHARED_ROOT, g_root); return; }
     if (!has_data(g_root)) LOG("[RED] no data pack in %s or in a folder of " SHARED_ROOT ": copy the contents of the port's <App>-data folder to a folder there", g_root);
