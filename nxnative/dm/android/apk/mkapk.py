@@ -29,7 +29,7 @@ ICON_ID = 0x7f010000   # drawable/icon in resources.arsc (res_table)
 MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.version_code), (True, 'versionName', ARGS.version_name)], [
     ('uses-sdk', [(True, 'minSdkVersion', MIN_SDK), (True, 'targetSdkVersion', TARGET_SDK)], []),
     ('uses-permission', [(True, 'name', 'android.permission.VIBRATE')], []),   # rumble and the touch gamepad's taps (a normal permission: granted at install)
-    # the data pack in /sdcard/nx2android/<package> (front_android.c pick_root): all files access from API 30, the storage permissions below it
+    # the data pack in any folder of /storage/emulated/0 (front_android.c pick_root): all files access from API 30, the storage permissions below it
     ('uses-permission', [(True, 'name', 'android.permission.MANAGE_EXTERNAL_STORAGE')], []),
     ('uses-permission', [(True, 'name', 'android.permission.READ_EXTERNAL_STORAGE')], []),
     ('uses-permission', [(True, 'name', 'android.permission.WRITE_EXTERNAL_STORAGE')], []),

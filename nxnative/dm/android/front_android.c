@@ -18,6 +18,7 @@
 #include <android/native_activity.h>
 #include <android/window.h>
 #include <android/native_window.h>
+#include <dirent.h>
 #include <errno.h>
 #include <jni.h>
 #include <pthread.h>
@@ -505,11 +506,14 @@ static void env_file(const char *path) {   // KEY=VALUE per line (# comments): s
     }
     fclose(f);
 }
-// ---- the shared data folder (kalasyan fork) ----
-// The data pack can also live in /sdcard/nx2android/<package>, which a file manager can write to without adb or Shizuku (Android/data/<package>/files
-// cannot be written from the device itself on Android 11 and later). The app's own folder wins when it holds a data pack (mods/), so installs made with
-// `porter install` keep working; otherwise the shared folder is used, after the user grants "all files access" (MANAGE_EXTERNAL_STORAGE) in Settings.
-#define SHARED_DATA_DIR "/storage/emulated/0/nx2android"
+// ---- the data pack in any folder of shared storage (kalasyan fork) ----
+// The data pack (the contents of the port's <App>-data folder) can be copied to any folder the player makes in /storage/emulated/0, which a file manager
+// can write to without adb or Shizuku (Android/data/<package>/files cannot be written from the device itself on Android 11 and later). The app finds it by
+// its nx2a-data.json naming this package, searching SHARED_DEPTH folder levels (not Android/ or hidden folders), and remembers the folder in internal
+// storage. The app's own folder wins when it holds a data pack (mods/), so installs made with `porter install` keep working; reading shared storage
+// needs "all files access" (MANAGE_EXTERNAL_STORAGE), which the app asks for in Settings.
+#define SHARED_ROOT "/storage/emulated/0"
+#define SHARED_DEPTH 4
 static int has_data(const char *dir) { char p[600]; struct stat st; snprintf(p, sizeof p, "%s/mods", dir); return !stat(p, &st) && S_ISDIR(st.st_mode); }
 static int package_of(const char *ext, char *out, size_t n) {   // .../Android/data/<package>/files -> <package>
     const char *a = ext ? strstr(ext, "/Android/data/") : NULL; if (!a) return 0;
@@ -539,15 +543,37 @@ static void ask_all_files_access(ANativeActivity *act, const char *pkg) {   // S
     if ((*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] cannot open the all files access setting"); return; }
     pthread_t t; if (!pthread_create(&t, NULL, exit_soon, NULL)) pthread_detach(t);   // nothing to run without the data: start again once it is granted
 }
-// The folder the game's files are read from: the app's own when it has a data pack, else SHARED_DATA_DIR/<package>
+static int pack_of(const char *dir, const char *pkg) {   // dir holds this package's data pack: mods/ and nx2a-data.json with "package": "<pkg>"
+    if (!has_data(dir)) return 0;
+    char p[600], buf[4096], want[300]; snprintf(p, sizeof p, "%s/nx2a-data.json", dir); FILE *f = fopen(p, "r"); if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof buf - 1, f); fclose(f); buf[n] = 0;
+    snprintf(want, sizeof want, "\"package\": \"%s\"", pkg); return strstr(buf, want) != NULL;
+}
+static int find_pack(const char *dir, const char *pkg, int depth, char *out, size_t n) {
+    if (pack_of(dir, pkg)) { snprintf(out, n, "%s", dir); return 1; }
+    if (!depth) return 0;
+    DIR *d = opendir(dir); if (!d) return 0;
+    struct dirent *e; int found = 0; char sub[600];
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.' || (depth == SHARED_DEPTH && !strcmp(e->d_name, "Android"))) continue;
+        snprintf(sub, sizeof sub, "%s/%s", dir, e->d_name);
+        struct stat st; if (stat(sub, &st) || !S_ISDIR(st.st_mode)) continue;
+        found = find_pack(sub, pkg, depth - 1, out, n);
+    }
+    closedir(d); return found;
+}
+// The folder the game's files are read from: the app's own when it has a data pack, else the shared storage folder holding this package's pack
 static void pick_root(ANativeActivity *act, int *asked) {
-    const char *own = act->externalDataPath ? act->externalDataPath : act->internalDataPath; char pkg[256], shared[512];
+    const char *own = act->externalDataPath ? act->externalDataPath : act->internalDataPath; char pkg[256], found[512], memo[600];
     snprintf(g_root, sizeof g_root, "%s", own);
     if (has_data(own) || !act->externalDataPath || !package_of(act->externalDataPath, pkg, sizeof pkg)) return;
-    snprintf(shared, sizeof shared, SHARED_DATA_DIR "/%s", pkg);
     if (!all_files_access(act)) { ask_all_files_access(act, pkg); *asked = 1; return; }
-    mkdir(SHARED_DATA_DIR, 0775); mkdir(shared, 0775);   // so the player sees where to copy the data pack
-    snprintf(g_root, sizeof g_root, "%s", shared);
+    snprintf(memo, sizeof memo, "%s/data_folder.txt", act->internalDataPath);
+    FILE *f = fopen(memo, "r");
+    if (f) { int ok = fgets(found, sizeof found, f) != NULL; fclose(f); found[strcspn(found, "\r\n")] = 0; if (ok && pack_of(found, pkg)) { snprintf(g_root, sizeof g_root, "%s", found); return; } }
+    if (!find_pack(SHARED_ROOT, pkg, SHARED_DEPTH, found, sizeof found)) return;
+    snprintf(g_root, sizeof g_root, "%s", found);
+    if ((f = fopen(memo, "w"))) { fprintf(f, "%s\n", found); fclose(f); }
 }
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity *act, void *saved, size_t saved_size) {
     (void)saved; (void)saved_size;
@@ -575,8 +601,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
-    if (asked) { LOG("no data pack in %s: asked for all files access to read " SHARED_DATA_DIR " instead", g_root); return; }
-    if (!has_data(g_root)) LOG("[RED] no data pack in %s: copy the contents of the port's <App>-data folder there", g_root);
+    if (asked) { LOG("no data pack in %s: asked for all files access to look for one in " SHARED_ROOT, g_root); return; }
+    if (!has_data(g_root)) LOG("[RED] no data pack in %s or in a folder of " SHARED_ROOT ": copy the contents of the port's <App>-data folder to a folder there", g_root);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
     // The game's main thread: a 16 MB stack mapped here and handed over whole (pthread_attr_setstack), so the range pthread_getattr_np reports, which
     // svcQueryMemory gives the game as its main thread stack (hle_svc.c), is exactly mapped memory: IL2CPP's garbage collector scans that range from
