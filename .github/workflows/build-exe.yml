@@ -1,0 +1,38 @@
+# Builds the player's bundle (nx2android.exe + nxnative/) the way the upstream release is made (packaging/build_bootloader.py, packaging/build_bundle.py)
+# and publishes it as a release of this fork, tagged fork-<git describe>.
+name: Build exe
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+  workflow_call:
+permissions: {contents: write}
+concurrency: {group: build-exe, cancel-in-progress: false}
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main, fetch-depth: 0}
+      - name: Upstream tags (git describe names the build)
+        shell: bash
+        run: git fetch --tags https://github.com/shirai91/nx2android.git main || true
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Python modules
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Bootloader (compiled here, as upstream does; waf finds the runner's Visual Studio Build Tools)
+        run: python packaging/build_bootloader.py
+      - name: Bundle
+        run: python packaging/build_bundle.py
+      - name: Release
+        shell: bash
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          ver=$(git describe --always --dirty)
+          zip=dist/nx2android-$ver-windows-x64.zip
+          mv "dist/nx2android-$ver.zip" "$zip"
+          notes="nx2android.exe built from kalasyan/nx2android main ($(git rev-parse --short HEAD)): shirai91/nx2android plus the shared data folder (/sdcard/nx2android/<package>)."$'\n\n'"Upstream commits since the last release of this fork:"$'\n\n'"$(git log --no-merges --format='- %s' -20 HEAD)"
+          gh release delete "fork-$ver" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "fork-$ver" "$zip" --target "$(git rev-parse HEAD)" --title "nx2android $ver (kalasyan)" --notes "$notes" --latest

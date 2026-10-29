@@ -10,6 +10,7 @@
 #include "overlay_layout.h"
 #include <math.h>
 #include <time.h>
+#include <android/api-level.h>
 #include <android/configuration.h>
 #include <android/input.h>
 #include <android/log.h>
@@ -504,6 +505,50 @@ static void env_file(const char *path) {   // KEY=VALUE per line (# comments): s
     }
     fclose(f);
 }
+// ---- the shared data folder (kalasyan fork) ----
+// The data pack can also live in /sdcard/nx2android/<package>, which a file manager can write to without adb or Shizuku (Android/data/<package>/files
+// cannot be written from the device itself on Android 11 and later). The app's own folder wins when it holds a data pack (mods/), so installs made with
+// `porter install` keep working; otherwise the shared folder is used, after the user grants "all files access" (MANAGE_EXTERNAL_STORAGE) in Settings.
+#define SHARED_DATA_DIR "/storage/emulated/0/nx2android"
+static int has_data(const char *dir) { char p[600]; struct stat st; snprintf(p, sizeof p, "%s/mods", dir); return !stat(p, &st) && S_ISDIR(st.st_mode); }
+static int package_of(const char *ext, char *out, size_t n) {   // .../Android/data/<package>/files -> <package>
+    const char *a = ext ? strstr(ext, "/Android/data/") : NULL; if (!a) return 0;
+    a += strlen("/Android/data/"); const char *b = strchr(a, '/'); size_t len = b ? (size_t)(b - a) : strlen(a);
+    if (!len || len >= n) return 0;
+    memcpy(out, a, len); out[len] = 0; return 1;
+}
+static int all_files_access(ANativeActivity *act) {   // Environment.isExternalStorageManager() (API 30+); below 30 the legacy storage permissions apply
+    if (android_get_device_api_level() < 30) return 1;
+    JNIEnv *E = act->env; jclass c = (*E)->FindClass(E, "android/os/Environment");
+    jmethodID m = c ? (*E)->GetStaticMethodID(E, c, "isExternalStorageManager", "()Z") : NULL;
+    if (!m) { (*E)->ExceptionClear(E); return 0; }
+    jboolean ok = (*E)->CallStaticBooleanMethod(E, c, m); if ((*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); return 0; }
+    return ok;
+}
+static void *exit_soon(void *a) { (void)a; sleep(1); _exit(0); }
+static void ask_all_files_access(ANativeActivity *act, const char *pkg) {   // Settings' "all files access" page for this app; the app reopens on its own launch
+    JNIEnv *E = act->env; char uri[300]; snprintf(uri, sizeof uri, "package:%s", pkg);
+    jclass cUri = (*E)->FindClass(E, "android/net/Uri"), cIntent = (*E)->FindClass(E, "android/content/Intent");
+    jmethodID parse = cUri ? (*E)->GetStaticMethodID(E, cUri, "parse", "(Ljava/lang/String;)Landroid/net/Uri;") : NULL;
+    jmethodID ctor = cIntent ? (*E)->GetMethodID(E, cIntent, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V") : NULL;
+    jmethodID start = (*E)->GetMethodID(E, (*E)->GetObjectClass(E, act->clazz), "startActivity", "(Landroid/content/Intent;)V");
+    if (!parse || !ctor || !start) { (*E)->ExceptionClear(E); LOG("[RED] cannot open the all files access setting"); return; }
+    jobject u = (*E)->CallStaticObjectMethod(E, cUri, parse, (*E)->NewStringUTF(E, uri));
+    jobject i = (*E)->NewObject(E, cIntent, ctor, (*E)->NewStringUTF(E, "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION"), u);
+    (*E)->CallVoidMethod(E, act->clazz, start, i);
+    if ((*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] cannot open the all files access setting"); return; }
+    pthread_t t; if (!pthread_create(&t, NULL, exit_soon, NULL)) pthread_detach(t);   // nothing to run without the data: start again once it is granted
+}
+// The folder the game's files are read from: the app's own when it has a data pack, else SHARED_DATA_DIR/<package>
+static void pick_root(ANativeActivity *act, int *asked) {
+    const char *own = act->externalDataPath ? act->externalDataPath : act->internalDataPath; char pkg[256], shared[512];
+    snprintf(g_root, sizeof g_root, "%s", own);
+    if (has_data(own) || !act->externalDataPath || !package_of(act->externalDataPath, pkg, sizeof pkg)) return;
+    snprintf(shared, sizeof shared, SHARED_DATA_DIR "/%s", pkg);
+    if (!all_files_access(act)) { ask_all_files_access(act, pkg); *asked = 1; return; }
+    mkdir(SHARED_DATA_DIR, 0775); mkdir(shared, 0775);   // so the player sees where to copy the data pack
+    snprintf(g_root, sizeof g_root, "%s", shared);
+}
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity *act, void *saved, size_t saved_size) {
     (void)saved; (void)saved_size;
     g_act = act;
@@ -513,7 +558,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onDestroy = on_destroy;
     ANativeActivity_setWindowFlags(act, AWINDOW_FLAG_KEEP_SCREEN_ON | AWINDOW_FLAG_FULLSCREEN, 0);
     static int started; if (started++) return;   // a second onCreate (configuration change) keeps the running game
-    snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
+    int asked = 0; pick_root(act, &asked);
     char p[700];
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
@@ -530,6 +575,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
+    if (asked) { LOG("no data pack in %s: asked for all files access to read " SHARED_DATA_DIR " instead", g_root); return; }
+    if (!has_data(g_root)) LOG("[RED] no data pack in %s: copy the contents of the port's <App>-data folder there", g_root);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
     // The game's main thread: a 16 MB stack mapped here and handed over whole (pthread_attr_setstack), so the range pthread_getattr_np reports, which
     // svcQueryMemory gives the game as its main thread stack (hle_svc.c), is exactly mapped memory: IL2CPP's garbage collector scans that range from
