@@ -1076,6 +1076,19 @@ static void rd_read(const uint64_t *a, int n) {
         int dup = 0; for (int j = 0; j < ns; j++) dup |= seen[j] == b; if (dup) continue; seen[ns++] = b;
         vk_scratch(4, 4, &db, &dof); VkBufferCopy r = {o, dof, 4}; vk_img_barrier_all(cb); vkCmdCopyBuffer(cb, b, db, 1, &r); vk_img_barrier_all(cb); }
 }
+// Why a draw has no program (kalasyan fork, Metroid Dread's half-drawn scenes): the bound program, each of its shaders' keys and the stage the bundle has
+// it as, and which stages are set. The first 24 different programs
+static void skip_why(void) {
+    static const void *seen[24]; static int n;
+    for (int i = 0; i < n; i++) if (seen[i] == S.prog) return;
+    if (n >= 24) return;
+    seen[n++] = S.prog;
+    int vk_shader_stage(uint64_t key); char b[400]; int o = 0;
+    if (S.prog) for (unsigned i = 0; i < 6 && o < 360; i++) { uint8_t k[8]; if (!prog_key(S.prog, i, k)) break; uint64_t kk = key64(k); o += snprintf(b + o, sizeof b - o, " [%u] %016llx stage %d", i, (unsigned long long)kk, kk ? vk_shader_stage(kk) : -9); }
+    b[o] = 0;
+    VKLOG("[skip] draw %llu: program %p (%d shaders)%s; set vs %d fs %d gs %d discard %d", (unsigned long long)g_draw_i, (void *)S.prog, S.prog ? (int)S.prog->nstage : -1, o ? b : " none",
+          S.sh[0] != NULL, S.sh[1] != NULL, S.sh[2] != NULL, (int)S.rast_discard);
+}
 // everything a draw needs bound; 0 when the draw cannot be done (logged once per reason)
 static int prepare_draw(int prim, int indexed) {
     // DM_VK_CB_DRAWS (read every submission, default 128, 0 = never): the replay is cut every that many draws and what is recorded goes to the GPU at once
@@ -1086,7 +1099,7 @@ static int prepare_draw(int prim, int indexed) {
     int var = g_bis_trace >= 0 && g_draw_i >= g_bis_trace ? g_bis_var : 0; if (g_bis_var) g_tracing = 0;   // full logs only the first time
     g_var_now = 0;
     if (var == 6) vk_end_pass();   // a new pass for this draw
-    if (!(S.sh[0] && (S.sh[1] || S.rast_discard))) { g_vkst.skip_prog++; VKRED_ONCE(50, "draw with a program whose shaders are not in the bundle: skipped"); return 0; }
+    if (!(S.sh[0] && (S.sh[1] || S.rast_discard))) { g_vkst.skip_prog++; VKRED_ONCE(50, "draw with a program whose shaders are not in the bundle: skipped"); skip_why(); return 0; }
     if (g_x_nogs && S.sh[2]) return 0;   // DM_VK_X_NOGS=1 (live, A/B): draws with a geometry shader are left out
     for (int i = 0; i < g_x_nskipvs; i++) if (S.sh[0]->key == g_x_skipvs[i]) return 0;   // DM_VK_X_SKIPVS=<key>[,<key>...] (live, up to 8): draws with these vertex shaders are left out
     // A run of draws with rasterizer discard gets a pass of its own: the pass ends where such a run begins and where it ends (and begin_pass puts a barrier
