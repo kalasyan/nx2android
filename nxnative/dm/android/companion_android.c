@@ -41,9 +41,11 @@ static void text(page *p, int x, int y, int s, uint32_t c, const char *t) {   //
 }
 static void draw(page *p, int fps, int64_t secs) {
     fill(p, 0, 0, p->w, p->h, 0xff201010);
-    int s = p->h / 70; if (s < 2) s = 2; int m = 3 * s, line = 11 * s;
+    // a font dot sized so that 28 characters fit the width and 16 lines the height (the Thor's bottom screen: 1240x1080, 7 px dots)
+    int s = p->w / (6 * 28 + 6); if (s > p->h / (11 * 16)) s = p->h / (11 * 16); if (s < 2) s = 2;
+    int m = 3 * s, line = 11 * s;
     fill(p, 0, 0, p->w, 2 * m + 7 * s * 2, 0xff5a2a1a);
-    text(p, m, m, 2 * s, 0xffffffff, "NX2A COMPANION");
+    text(p, m, m, 2 * s, 0xffffffff, "NX2A COMPANION");   // 14 characters at twice the size: 28 cells
     char b[96]; int y = 2 * m + 14 * s + line;
     snprintf(b, sizeof b, "Pantalla %d: %dx%d", g_disp_id, p->w, p->h); text(p, m, y, s, 0xffd0d0d0, b); y += line;
     if (fps >= 0) snprintf(b, sizeof b, "Juego: %d FPS", fps); else snprintf(b, sizeof b, "Juego: --"); text(p, m, y, s, 0xff80ff80, b); y += line;
