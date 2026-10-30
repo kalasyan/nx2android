@@ -33,6 +33,8 @@ def _parser():
     t.add_argument('--only', default='', help='these instead of the missing ones: ndk, dotnet, adb (comma-separated)'); t.add_argument('--json', action='store_true')
     t.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'))
     c = sub.add_parser('config', help='show or change the saved settings'); c.add_argument('key', nargs='?'); c.add_argument('value', nargs='?')
+    dc = sub.add_parser('dread-companion', help="Metroid Dread's map for the second screen page: files to copy over its data pack (kalasyan fork)")
+    dc.add_argument('folder', help='the game folder of a Metroid Dread port (or its RomFS)'); dc.add_argument('-o', '--out', help='default: <folder>/MetroidDread-companion')
     return ap
 
 
@@ -156,7 +158,12 @@ def cmd_config(a):
     return 0
 
 
+def cmd_dread_companion(a):
+    from porter import dread_companion
+    dread_companion.make(a.folder, a.out); return 0
+
+
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'dread-companion': cmd_dread_companion}[a.cmd](a)

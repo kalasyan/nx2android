@@ -1,12 +1,13 @@
 // The companion on a second screen (kalasyan fork): devices with two screens (the AYN Thor's bottom one) show a page of their own there while the game
 // plays on the main one. Off unless env.txt sets DM_COMPANION=1. The app has no Java code, so it is all JNI on framework classes: DisplayManager's displays,
 // the first other than the default one (a presentation display first) gets an android.app.Presentation holding a SurfaceView, and a thread of its own
-// draws into that view's surface with the CPU (ANativeWindow_lock) twice a second. No SurfaceHolder.Callback (that needs a Java class): the thread looks at
+// draws into that view's surface with the CPU (ANativeWindow_lock), twice a second (15 times in Metroid Dread). No SurfaceHolder.Callback (that needs a Java class): the thread looks at
 // Surface.isValid() each time and takes the window again when the surface was remade. The window is not focusable, so a controller's keys stay the game's
 // after a touch on the second screen. Hidden while the app is in the background (onPause), shown again on onResume.
-// For now the page is a test card (the screen, the game's frame rate, the time played): the map and the player's state come later.
+// The page is a test card (the screen, the game's frame rate, the time played), or Metroid Dread's map (companion_dread.c).
 #include "dm.h"
 #include "font5x7.h"
+#include "companion.h"
 #include <android/native_activity.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
@@ -28,18 +29,18 @@ static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->Excepti
 static int64_t page_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
 
 // ---- the page: RGBA_8888 pixels (0xAABBGGRR) ----
-typedef struct { uint32_t *px; int w, h, stride; } page;
-static void fill(page *p, int x0, int y0, int x1, int y1, uint32_t c) {
+void fill(page *p, int x0, int y0, int x1, int y1, uint32_t c) {
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > p->w) x1 = p->w; if (y1 > p->h) y1 = p->h;
     for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) p->px[(size_t)y * p->stride + x] = c;
 }
-static void text(page *p, int x, int y, int s, uint32_t c, const char *t) {   // s = the size of one font dot in pixels
+void text(page *p, int x, int y, int s, uint32_t c, const char *t) {   // s = the size of one font dot in pixels
     for (; *t; t++, x += 6 * s) {
         unsigned ch = (unsigned char)*t; if (ch < 32 || ch > 126) ch = '?';
         for (int col = 0; col < 5; col++) for (int row = 0; row < 7; row++) if (FONT5X7[ch - 32][col] >> row & 1) fill(p, x + col * s, y + row * s, x + (col + 1) * s, y + (row + 1) * s, c);
     }
 }
 static void draw(page *p, int fps, int64_t secs) {
+    if (dm_dread_draw(p)) return;   // Metroid Dread: its map (companion_dread.c)
     fill(p, 0, 0, p->w, p->h, 0xff201010);
     // a font dot sized so that 28 characters fit the width and 16 lines the height (the Thor's bottom screen: 1240x1080, 7 px dots)
     int s = p->w / (6 * 28 + 6); if (s > p->h / (11 * 16)) s = p->h / (11 * 16); if (s < 2) s = 2;
@@ -60,7 +61,8 @@ static void *companion_thread(void *a) {
     jmethodID mSurf = cH ? (*E)->GetMethodID(E, cH, "getSurface", "()Landroid/view/Surface;") : NULL, mValid = cS ? (*E)->GetMethodID(E, cS, "isValid", "()Z") : NULL;
     if (jx(E) || !mSurf || !mValid) { LOG("[RED] [companion] SurfaceHolder methods missing"); return NULL; }
     ANativeWindow *win = NULL; int64_t t0 = page_ns(), tf = t0; uint64_t f0 = dm_frames_shown(); int fps = -1, logged = 0;
-    for (;; usleep(500000)) {
+    for (;; usleep(dm_dread_active() ? 66000 : 500000)) {   // the map follows the player at 15 fps
+        dm_dread_tick();
         int64_t t = page_ns(); uint64_t f = dm_frames_shown();
         if (t - tf >= 1000000000) { fps = (int)((f - f0) * 1000000000 / (uint64_t)(t - tf)); f0 = f; tf = t; }
         if (atomic_load(&g_hidden)) continue;
