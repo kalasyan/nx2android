@@ -40,9 +40,10 @@ static int is_table(const volatile tvalue *t) {
     for (int i = 0; i < NX_N; i++) if (t[i].tt != LUA_TNUMBER) return 0;
     return t[NX_M1].v.n == NX_MAGIC1 && t[NX_M2].v.n == NX_MAGIC2 && t[NX_VER].v.n == 1;
 }
-#define MAXCAND 8
+#define MAXCAND 32
 static const volatile tvalue *g_cand[MAXCAND]; static float g_cand_seq[MAXCAND]; static int g_ncand;
 static const volatile tvalue *g_tab;   // the live copy
+static int64_t g_cand_t;   // when the candidates were found
 static void scan_range(const uint8_t *b, size_t n) {
     uint32_t m1 = fbits(NX_MAGIC1), m2 = fbits(NX_MAGIC2);
     if (n < NX_N * sizeof(tvalue)) return;
@@ -69,25 +70,28 @@ static void scan(void) {
     g_ncand = 0;
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && g_mod[i].data_off < g_mod[i].size) scan_readable(g_mod[i].base + g_mod[i].data_off, g_mod[i].size - g_mod[i].data_off);
     uint8_t *hb; size_t hn; svc_heap_range(&hb, &hn); if (hb) scan_readable(hb, hn);
-    static int logs; if (logs++ < 6 || g_ncand) LOG("[companion] Dread: %d copies of the NX2A table found (%.0f ms)", g_ncand, ((int64_t)now_ns() - t0) / 1e6);
+    g_cand_t = (int64_t)now_ns();
+    static int logs, last = -1; if (logs++ < 6 || g_ncand != last) LOG("[companion] Dread: %d copies of the NX2A table found (%.0f ms)%s", g_ncand, (g_cand_t - t0) / 1e6, g_ncand ? ", waiting for one to move" : ""); last = g_ncand;
 }
 
 // ---- the state, read each pass ----
 static struct { int area, life, lifemax, mis, mismax; float x, y; int64_t moved; } g_st;
-static int64_t g_next_scan;
+static int64_t g_next_scan, g_backoff = 2000000000;   // the next scan; the wait after a scan that found nothing live, doubling to 16 s
 void dm_dread_tick(void) {
     if (!dm_dread_active()) return;
-    int64_t now = (int64_t)now_ns(); static int64_t backoff = 2000000000;
-    if (g_tab && !is_table(g_tab)) { LOG("[companion] Dread: the NX2A table went (an area loading?)"); g_tab = NULL; g_ncand = 0; g_next_scan = now + 1000000000; backoff = 2000000000; }
+    int64_t now = (int64_t)now_ns();
+    if (g_tab && !is_table(g_tab)) { LOG("[companion] Dread: the NX2A table went (an area loading?)"); g_tab = NULL; g_ncand = 0; g_next_scan = now + 1000000000; g_backoff = 2000000000; }
     if (!g_tab && g_ncand) {   // a copy whose seq moves is the live one
         for (int i = 0; i < g_ncand; i++) {
             if (!is_table(g_cand[i])) { g_ncand--; g_cand[i] = g_cand[g_ncand]; g_cand_seq[i] = g_cand_seq[g_ncand]; i--; continue; }
             if (g_cand[i][NX_SEQ].v.n != g_cand_seq[i]) { g_tab = g_cand[i]; LOG("[companion] Dread: following the NX2A table at %p", (void *)g_tab); break; }
         }
+        // none moves (the copy the game made at boot, before any area): look again, the area's own copy may be elsewhere
+        if (!g_tab && g_ncand && now - g_cand_t > 3000000000) { g_ncand = 0; g_next_scan = now + g_backoff; if (g_backoff < 16000000000) g_backoff *= 2; }
     }
     if (!g_tab && !g_ncand && now >= g_next_scan) {
         scan();
-        if (!g_ncand) { g_next_scan = now + backoff; if (backoff < 16000000000) backoff *= 2; } else backoff = 2000000000;
+        if (!g_ncand) { g_next_scan = now + g_backoff; if (g_backoff < 16000000000) g_backoff *= 2; }
     }
     if (!g_tab) return;
     const volatile tvalue *t = g_tab;

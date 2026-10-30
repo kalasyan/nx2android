@@ -33,12 +33,15 @@ SCENARIO = 'system/scripts/scenario.lc'
 ORIGINAL = 'system/scripts/nx2a_scenario_original.lc'
 
 # The wrapper. The table's array part is 11 numbers in a row in memory; it is only assigned to after it is made, so it stays where it is.
-# Areas are numbered as AREAS (1 = s010_cave); seq counts frames so the host can tell the live table from an old one.
+# Areas are numbered as AREAS (1 = s010_cave); seq counts frames so the host can tell the live table from an old one. The ticks start when the script
+# loads and again when an area finishes loading (one chain at a time: a tick of an older chain ends it).
 WRAPPER = '''Game.ImportLibrary("system/scripts/nx2a_scenario_original.lua")
 -- nx2android companion page (kalasyan fork): the player's state for the port's second screen
 NX2A = NX2A or {1357.25, -8642.75, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 NX2A_AREA = {%s}
-function NX2A_Tick()
+NX2A_CHAIN = NX2A_CHAIN or 0
+function NX2A_Tick(chain)
+  if chain ~= NX2A_CHAIN then return end
   pcall(function()
     local p = Game.GetPlayer()
     if p ~= nil then
@@ -52,14 +55,18 @@ function NX2A_Tick()
     end
   end)
   NX2A[3] = (NX2A[3] + 1) %% 1000000
-  NX2A_SF = Game.AddSF(0, "NX2A_Tick", "")
+  Game.AddSF(0, "NX2A_Tick", "i", chain)
+end
+function NX2A_Start()   -- a new chain of ticks; the one before stops at its next tick
+  NX2A_CHAIN = NX2A_CHAIN + 1
+  pcall(Game.AddSF, 0, "NX2A_Tick", "i", NX2A_CHAIN)
 end
 local nx2a_onload = Scenario.OnLoadScenarioFinished
 function Scenario.OnLoadScenarioFinished()
-  nx2a_onload()
-  if NX2A_SF ~= nil then Game.DelSFByID(NX2A_SF) end
-  NX2A_SF = Game.AddSF(0, "NX2A_Tick", "")
+  if nx2a_onload ~= nil then nx2a_onload() end
+  NX2A_Start()
 end
+NX2A_Start()
 ''' % ', '.join(f'{a} = {i + 1}' for i, a in enumerate(AREAS))
 
 
