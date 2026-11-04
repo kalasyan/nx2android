@@ -33,40 +33,47 @@ SCENARIO = 'system/scripts/scenario.lc'
 ORIGINAL = 'system/scripts/nx2a_scenario_original.lc'
 
 # The wrapper. The table's array part is 11 numbers in a row in memory; it is only assigned to after it is made, so it stays where it is.
-# Areas are numbered as AREAS (1 = s010_cave); seq counts frames so the host can tell the live table from an old one. The ticks start when the script
+# loads and again when an area finishes loading (one chain at a time: a tick of an older chain ends it), every 0.05 s through Game.AddSF called as the game calls it.
 # loads and again when an area finishes loading (one chain at a time: a tick of an older chain ends it).
 WRAPPER = '''Game.ImportLibrary("system/scripts/nx2a_scenario_original.lua")
 -- nx2android companion page (kalasyan fork): the player's state for the port's second screen
+-- Ticks go through Game.AddSF as the game's own scripts call it: a Scenario.* function by its full name, a delay and a format of "s" (the game never uses "i")
 NX2A = NX2A or {1357.25, -8642.75, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 NX2A_AREA = {%s}
 NX2A_CHAIN = NX2A_CHAIN or 0
-function NX2A_Tick(chain)
-  if chain ~= NX2A_CHAIN then return end
+function Scenario.NX2A_Tick(chain)
+  if chain ~= tostring(NX2A_CHAIN) then return end
+  NX2A[3] = (NX2A[3] + 1) %% 1000000
   pcall(function()
+    local id = Scenario.CurrentScenarioID
+    if id ~= nil then NX2A[4] = NX2A_AREA[id] or 0 end
     local p = Game.GetPlayer()
     if p ~= nil then
       local v = p.vPos
-      NX2A[4] = NX2A_AREA[Game.GetScenarioID()] or 0
       NX2A[5] = v[0]
       NX2A[6] = v[1]
-      if p.LIFE ~= nil then NX2A[7] = p.LIFE.fCurrentLife; NX2A[8] = p.LIFE.fMaxLife end
-      NX2A[9] = Game.GetItemAmount(Game.GetPlayerName(), "ITEM_WEAPON_MISSILE_CURRENT")
-      NX2A[10] = Game.GetItemAmount(Game.GetPlayerName(), "ITEM_WEAPON_MISSILE_MAX")
     end
   end)
-  NX2A[3] = (NX2A[3] + 1) %% 1000000
-  Game.AddSF(0, "NX2A_Tick", "i", chain)
+  pcall(function()
+    local l = Game.GetPlayer().LIFE
+    NX2A[7] = l.fCurrentLife; NX2A[8] = l.fMaxLife
+  end)
+  pcall(function()
+    NX2A[9] = Game.GetItemAmount(Game.GetPlayerName(), "ITEM_WEAPON_MISSILE_CURRENT")
+    NX2A[10] = Game.GetItemAmount(Game.GetPlayerName(), "ITEM_WEAPON_MISSILE_MAX")
+  end)
+  Game.AddSF(0.05, "Scenario.NX2A_Tick", "s", chain)
 end
-function NX2A_Start()   -- a new chain of ticks; the one before stops at its next tick
+function Scenario.NX2A_Start()   -- a new chain of ticks; the one before stops at its next tick
   NX2A_CHAIN = NX2A_CHAIN + 1
-  pcall(Game.AddSF, 0, "NX2A_Tick", "i", NX2A_CHAIN)
+  pcall(Game.AddSF, 0.05, "Scenario.NX2A_Tick", "s", tostring(NX2A_CHAIN))
 end
 local nx2a_onload = Scenario.OnLoadScenarioFinished
-function Scenario.OnLoadScenarioFinished()
-  if nx2a_onload ~= nil then nx2a_onload() end
-  NX2A_Start()
+function Scenario.OnLoadScenarioFinished(...)
+  if nx2a_onload ~= nil then nx2a_onload(...) end
+  Scenario.NX2A_Start()
 end
-NX2A_Start()
+Scenario.NX2A_Start()
 ''' % ', '.join(f'{a} = {i + 1}' for i, a in enumerate(AREAS))
 
 
