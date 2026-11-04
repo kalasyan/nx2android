@@ -32,7 +32,7 @@ jobs:
         run: |
           ver=$(git describe --always --dirty)
           zip=dist/nx2android-$ver-windows-x64.zip
-          mv "dist/nx2android-$ver.zip" "$zip"
-          notes="nx2android.exe built from kalasyan/nx2android main ($(git rev-parse --short HEAD)): shirai91/nx2android plus the shared data folder (/sdcard/nx2android/<package>)."$'\n\n'"Upstream commits since the last release of this fork:"$'\n\n'"$(git log --no-merges --format='- %s' -20 HEAD)"
+          [ -f "$zip" ] || mv "dist/nx2android-$ver.zip" "$zip"   # build_bundle names it -windows-x64 itself since upstream v0.2.0
+          notes="nx2android.exe built from kalasyan/nx2android main ($(git rev-parse --short HEAD)): shirai91/nx2android plus the fork's additions (data pack in any folder of shared storage, second screen companion): see FORK.md."$'\n\n'"Upstream commits since the last release of this fork:"$'\n\n'"$(git log --no-merges --format='- %s' -20 HEAD)"
           gh release delete "fork-$ver" --yes --cleanup-tag 2>/dev/null || true
           gh release create "fork-$ver" "$zip" --target "$(git rev-parse HEAD)" --title "nx2android $ver (kalasyan)" --notes "$notes" --latest
