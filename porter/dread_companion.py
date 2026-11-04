@@ -33,7 +33,7 @@ SCENARIO = 'system/scripts/scenario.lc'
 ORIGINAL = 'system/scripts/nx2a_scenario_original.lc'
 
 # The wrapper. The table's array part is 11 numbers in a row in memory; it is only assigned to after it is made, so it stays where it is.
-# loads and again when an area finishes loading (one chain at a time: a tick of an older chain ends it), every 0.05 s through Game.AddSF called as the game calls it.
+# Areas are numbered as AREAS (1 = s010_cave); seq counts ticks so the host can tell the live table from an old one. The ticks start when the script
 # loads and again when an area finishes loading (one chain at a time: a tick of an older chain ends it).
 WRAPPER = '''Game.ImportLibrary("system/scripts/nx2a_scenario_original.lua")
 -- nx2android companion page (kalasyan fork): the player's state for the port's second screen
