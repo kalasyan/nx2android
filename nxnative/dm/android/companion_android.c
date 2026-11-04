@@ -4,10 +4,13 @@
 // draws into that view's surface with the CPU (ANativeWindow_lock), twice a second (15 times in Metroid Dread). No SurfaceHolder.Callback (that needs a Java class): the thread looks at
 // Surface.isValid() each time and takes the window again when the surface was remade. The window is not focusable, so a controller's keys stay the game's
 // after a touch on the second screen. Hidden while the app is in the background (onPause), shown again on onResume.
+// Touches on the page reach dm_dread_touch through org.nx2a.CompanionTouch, a View.OnTouchListener in a dex made by hand (tools/companion_dex.py) and
+// loaded with InMemoryDexClassLoader, whose onTouch is on_touch below.
 // The page is a test card (the screen, the game's frame rate, the time played), or Metroid Dread's map (companion_dread.c).
 #include "dm.h"
 #include "font5x7.h"
 #include "companion.h"
+#include "companion_touch_dex.h"
 #include <android/native_activity.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
@@ -80,6 +83,38 @@ static void *companion_thread(void *a) {
     return NULL;
 }
 
+static jmethodID g_evAct, g_evIdx, g_evN, g_evX, g_evY;
+static jboolean JNICALL on_touch(JNIEnv *E, jobject self, jobject v, jobject ev) {   // on the main thread
+    (void)self; (void)v;
+    int act = (*E)->CallIntMethod(E, ev, g_evAct), n = (*E)->CallIntMethod(E, ev, g_evN), idx = (*E)->CallIntMethod(E, ev, g_evIdx); float x[2] = {0}, y[2] = {0};
+    if (n > 2) n = 2;
+    for (int i = 0; i < n; i++) { x[i] = (*E)->CallFloatMethod(E, ev, g_evX, i); y[i] = (*E)->CallFloatMethod(E, ev, g_evY, i); }
+    if (jx(E)) return JNI_TRUE;
+    dm_dread_touch(act, idx, n, x, y); return JNI_TRUE;
+}
+static void touch_listen(JNIEnv *E, ANativeActivity *act, jobject sv) {   // sv.setOnTouchListener(a CompanionTouch); without it the page only shows
+    jclass cO = (*E)->FindClass(E, "java/lang/Object"), cCL = (*E)->FindClass(E, "java/lang/ClassLoader"), cIM = (*E)->FindClass(E, "dalvik/system/InMemoryDexClassLoader");
+    jclass cV = (*E)->FindClass(E, "android/view/View"), cEv = (*E)->FindClass(E, "android/view/MotionEvent");
+    if (jx(E) || !cO || !cCL || !cIM || !cV || !cEv) { LOG("[RED] [companion] no touches: classes missing"); return; }
+    jmethodID oCls = (*E)->GetMethodID(E, cO, "getClass", "()Ljava/lang/Class;"), cGet = (*E)->GetMethodID(E, (*E)->FindClass(E, "java/lang/Class"), "getClassLoader", "()Ljava/lang/ClassLoader;");
+    jmethodID imNew = (*E)->GetMethodID(E, cIM, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V"), clLoad = (*E)->GetMethodID(E, cCL, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jmethodID vSet = (*E)->GetMethodID(E, cV, "setOnTouchListener", "(Landroid/view/View$OnTouchListener;)V");
+    g_evAct = (*E)->GetMethodID(E, cEv, "getActionMasked", "()I"); g_evIdx = (*E)->GetMethodID(E, cEv, "getActionIndex", "()I"); g_evN = (*E)->GetMethodID(E, cEv, "getPointerCount", "()I");
+    g_evX = (*E)->GetMethodID(E, cEv, "getX", "(I)F"); g_evY = (*E)->GetMethodID(E, cEv, "getY", "(I)F");
+    if (jx(E) || !oCls || !cGet || !imNew || !clLoad || !vSet || !g_evAct || !g_evIdx || !g_evN || !g_evX || !g_evY) { LOG("[RED] [companion] no touches: methods missing"); return; }
+    jobject parent = (*E)->CallObjectMethod(E, (*E)->CallObjectMethod(E, act->clazz, oCls), cGet); if (jx(E)) return;
+    void *dex = malloc(sizeof COMPANION_TOUCH_DEX); if (!dex) return; memcpy(dex, COMPANION_TOUCH_DEX, sizeof COMPANION_TOUCH_DEX);   // kept: the loader reads the buffer
+    jobject buf = (*E)->NewDirectByteBuffer(E, dex, sizeof COMPANION_TOUCH_DEX), ld = buf && !jx(E) ? (*E)->NewObject(E, cIM, imNew, buf, parent) : NULL;
+    if (jx(E) || !ld) { LOG("[RED] [companion] no touches: the dex did not load"); return; }
+    jclass cT = (*E)->CallObjectMethod(E, ld, clLoad, (*E)->NewStringUTF(E, "org.nx2a.CompanionTouch"));
+    if (jx(E) || !cT) { LOG("[RED] [companion] no touches: no CompanionTouch class"); return; }
+    JNINativeMethod m = {"onTouch", "(Landroid/view/View;Landroid/view/MotionEvent;)Z", (void *)on_touch};
+    if ((*E)->RegisterNatives(E, cT, &m, 1) || jx(E)) { LOG("[RED] [companion] no touches: onTouch not registered"); return; }
+    jobject l = (*E)->AllocObject(E, cT); if (jx(E) || !l) { LOG("[RED] [companion] no touches: no listener"); return; }
+    (*E)->NewGlobalRef(E, ld); (*E)->CallVoidMethod(E, sv, vSet, (*E)->NewGlobalRef(E, l));
+    if (!jx(E)) LOG("[companion] touches on the page: on");
+}
+
 // On the main thread (ANativeActivity_onCreate): finds the second screen and shows the Presentation on it
 void dm_companion_start(ANativeActivity *act) {
     const char *on = getenv("DM_COMPANION"); if (!on || atoi(on) == 0 || g_pres) return;
@@ -118,6 +153,7 @@ void dm_companion_start(ANativeActivity *act) {
     if (!jx(E) && w) { (*E)->CallVoidMethod(E, w, wAdd, 0x8 | 0x80); jx(E); }   // FLAG_NOT_FOCUSABLE | FLAG_KEEP_SCREEN_ON
     (*E)->CallVoidMethod(E, pres, dShow);
     if (jx(E)) { LOG("[RED] [companion] the Presentation did not show on display %d", g_disp_id); return; }
+    touch_listen(E, act, sv);
     jobject h = (*E)->CallObjectMethod(E, sv, svH); if (jx(E) || !h) { LOG("[RED] [companion] no SurfaceHolder"); return; }
     g_pres = (*E)->NewGlobalRef(E, pres); g_holder = (*E)->NewGlobalRef(E, h);
     LOG("[companion] shown on display %d%s", g_disp_id, pick_pres ? " (a presentation display)" : "");

@@ -7,3 +7,4 @@ void text(page *p, int x, int y, int s, uint32_t c, const char *t);   // the 5x7
 int dm_dread_active(void);   // the game is Metroid Dread 2.1.0
 void dm_dread_tick(void);    // the companion thread, each pass: finds and reads the player's state
 int dm_dread_draw(page *p);  // the map with the player on it; 0 = nothing to show yet
+void dm_dread_touch(int action, int index, int n, const float *x, const float *y);   // a touch on the page (main thread): MotionEvent's masked action, up to 2 pointers
