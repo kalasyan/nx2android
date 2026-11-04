@@ -376,19 +376,63 @@ def free_gb(p):
 
 
 # ---- NSP identification ----
-def pfs0_names(path):   # NSP = PFS0: list the file names inside
-    with open(path, 'rb') as f:
-        h = f.read(16)
-        if h[:4] != b'PFS0': return []
+def dump_files(f):   # the files of a dump, [(name, offset in the file)]: NSP / NSZ = PFS0; XCI / XCZ = its secure partition (an HFS0 in the root HFS0 the card header points to); [] for anything else
+    def fs(at, esize):   # a PFS0 (entries of 0x18 bytes) or HFS0 (0x40)
+        f.seek(at); h = f.read(16)
+        if len(h) < 16 or h[:4] not in (b'PFS0', b'HFS0'): return []
         n, st = struct.unpack_from('<II', h, 4)
-        ent, strs = f.read(n * 0x18), f.read(st)
-    # the last name may end the table without a NUL (four of the Kairosoft pack's NSZ files)
-    return [strs[o:e if (e := strs.find(b'\0', o)) >= 0 else len(strs)].decode(errors='replace') for o in (struct.unpack_from('<I', ent, i * 0x18 + 0x10)[0] for i in range(n))]
+        ent, strs = f.read(n * esize), f.read(st)
+        data = at + 16 + n * esize + st
+        # the last name may end the table without a NUL (four of the Kairosoft pack's NSZ files)
+        return [(strs[o:e if (e := strs.find(b'\0', o)) >= 0 else len(strs)].decode(errors='replace'), data + off) for off, o in (struct.unpack_from('<Q8xI', ent, i * esize) for i in range(n))]
+    if top := fs(0, 0x18): return top
+    for card in (0, 0x1000):   # a card image, or one dumped with its 0x1000-byte key area first
+        f.seek(card + 0x100)
+        if f.read(4) != b'HEAD': continue
+        f.seek(card + 0x130); root = card + struct.unpack('<Q', f.read(8))[0]
+        return next((fs(o, 0x40) for n, o in fs(root, 0x40) if n == 'secure'), [])
+    return []
 
 
-def title_of(path):   # the ticket name (the first 16 digits of the rights ID = title ID), else [title ID] in the file name
-    for n in pfs0_names(path):   # the ticket first: a file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)
-        if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
+def header_key(keys):   # prod.keys' header_key (the NCA headers' AES-XTS key pair), None without it
+    try: m = re.search(r'^\s*header_key\s*=\s*([0-9A-Fa-f]{64})\s*$', Path(keys).read_text(errors='replace'), re.M)
+    except OSError: return None
+    return bytes.fromhex(m.group(1)) if m else None
+
+
+def aes_ecb(key):   # pycryptodome (some package managers call it pycryptodomex); None without it
+    try: from Crypto.Cipher import AES
+    except ImportError:
+        try: from Cryptodome.Cipher import AES
+        except ImportError: return None
+    return AES.new(key, AES.MODE_ECB)
+
+
+def meta_title(f, at, hk):
+    """The title ID in the header of the NCA at offset at (an NCZ keeps its NCA's header as it is) when it is a content meta NCA, else None. The header is AES-XTS with hk, in sectors of
+    0x200 bytes whose tweak is the sector number big-endian (Nintendo's, not the standard's little-endian); its second sector holds magic NCA3 / NCA2, the content type at +5 (1 = meta)
+    and the title ID at +0x10. Only the meta NCA's is the dump's own: an update's program and control NCAs carry the base game's title ID"""
+    data, tweak = aes_ecb(hk[:16]), aes_ecb(hk[16:])
+    f.seek(at + 0x200); c = f.read(0x200)
+    if len(c) < 0x200: return None
+    t, mask, p = int.from_bytes(tweak.encrypt((1).to_bytes(16, 'big')), 'little'), (1 << 128) - 1, b''
+    for i in range(0, 0x200, 16):
+        tb = t.to_bytes(16, 'little')
+        p += bytes(a ^ b for a, b in zip(data.decrypt(bytes(a ^ b for a, b in zip(c[i:i + 16], tb))), tb))
+        t = (t << 1 & mask) ^ (0x87 if t >> 127 else 0)
+    return struct.unpack_from('<Q', p, 0x10)[0] if p[:4] in (b'NCA3', b'NCA2') and p[5] == 1 else None
+
+
+def title_of(path, hk=None):
+    """The ticket name (the first 16 digits of the rights ID = title ID), else the content meta NCA's header (hk: prod.keys' header_key; an untagged cartridge dump has no ticket:
+    "hr-bdlwa.xci", issue #28), else [title ID] in the file name. A file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)"""
+    with open(path, 'rb') as f:
+        files = dump_files(f)
+        for n, _ in files:
+            if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
+        if hk and aes_ecb(hk[:16]):   # the smallest when a card holds more than one title: the base game …000 before its update …800 and DLC
+            tids = [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
+            if tids: return min(tids)
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     return int(m.group(1), 16) if m else None
 
@@ -398,13 +442,15 @@ def version_of(path):
     return int(m.group(1)) if m else None
 
 
-def scan_nsps(nsp_dir, exts=('nsp', 'xci')):
-    """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. exts: the kinds of dump to take (the Android porter adds nsz, xcz)"""
+def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None):
+    """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. exts: the kinds of dump to take (the Android porter adds nsz, xcz);
+    keys: prod.keys, whose header_key reads the title ID of a dump with neither a ticket nor a [title ID] tag from its NCA headers"""
     fams, unknown = {}, []
+    hk = header_key(keys) if keys else None
     for p in sorted(p for e in exts for p in nsp_dir.glob(f'*.{e}')):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
-        tid = title_of(p)
+        tid = title_of(p, hk)
         if tid is None: unknown.append(p); continue
         low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
         app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
@@ -414,7 +460,12 @@ def scan_nsps(nsp_dir, exts=('nsp', 'xci')):
         else: f['dlc'].append((tid, version_of(p), p))
     if len(fams) == 1 and len(unknown) == 1 and next(iter(fams.values()))['base'] is None:   # a base game converted from a cartridge may have neither tags nor a ticket; build IDs are checked afterwards
         next(iter(fams.values()))['base'] = unknown[0]
-    if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')
+    if not fams:
+        why = ('' if not unknown else ': no prod.keys to read the title ID from the NCA headers' if not keys else f': no such file: {keys}' if not Path(keys).is_file()
+               else ': prod.keys has no header_key' if not hk
+               else ': pycryptodome is missing to read the NCA headers (pip install pycryptodome)' if not aes_ecb(hk[:16]) else ': no content meta NCA in them')
+        raise BuildError(f'no NSP with a readable title ID in {nsp_dir}' + (f' ({", ".join(p.name for p in unknown)}: no ticket and no [title ID] in the name{why}; '
+                         'or put the title ID in the base game\'s name, e.g. "Game [01009D901BC56000][v0].xci")' if unknown else ''))
     if len(fams) > 1: raise BuildError('more than one game in the folder, keep one game per folder: ' + ', '.join(f'{t:016X}' for t in fams))
     app, fam = next(iter(fams.items()))
     if fam['base'] is None: raise BuildError(f'no base game NSP found in {nsp_dir} (title ID {app:016X})')
@@ -1211,7 +1262,7 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     if key and pkg.is_dir() and (note := reused(kf, key)) is not None:
         PROG.end(f'{note}, reused (inputs unchanged)'); return package_key(pkg)
     if oodle:   # the packs are decoded by the game's own Oodle in the Mac host (dm/host/hle_oodle.c)
-        PROG.set(step='building the Mac host for the game\'s Oodle decoder'); env = dict(env, **oodle())
+        PROG.set(step="setting up the game's Oodle decoder"); env = dict(env, **oodle())
     if aoc: env = dict(env, DM_SPLIT_AOC=str(aoc))
     PROG.set(step='splitting')
     tmp = pkg.with_name(pkg.name + '.partial'); rmtree(tmp); (tmp / 'tables').mkdir(parents=True)
@@ -1540,8 +1591,8 @@ def main(args=None):
     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
-    app, fam = scan_nsps(nsp_dir)
-    force = args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
+    app, fam = scan_nsps(nsp_dir, keys=keys)
+    force =args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
     if g is None:   # no game profile: survey, then (unless --survey-only) a provisional profile outside the repository and a best-effort IPA
         missing = [m for m in ('lz4.block', 'capstone') if not _importable(m)]

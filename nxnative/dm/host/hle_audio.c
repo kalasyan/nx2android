@@ -93,7 +93,8 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     while (n) {
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
         if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
-            if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); if (!a->heard) atomic_fetch_add(&a->under_quiet, 1); }
+            // only what the sound card plays: the silent sink drains a held game's queue in the background, where nothing is heard (5 s at home were counted as 1,000 underruns)
+            if (qh == qt && a->backend == BK_AU && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); if (!a->heard) atomic_fetch_add(&a->under_quiet, 1); }
             memset(dst, 0, n); break; }
         gbuf *b = a->q[qh & (QMAX - 1)].b; uint8_t *bp = a->q[qh & (QMAX - 1)].ptr; uint64_t bs = a->q[qh & (QMAX - 1)].size;
         uint64_t k = bs - a->pos; if (k > n) k = n;

@@ -161,6 +161,10 @@ def decompress(src, dst, done=lambda n: None):
     p = plan(src)
     hdr = _pfs0_header([e[0] for e in p], [e[3] for e in p])
     tmp = dst.with_name(dst.name + '.partial')
+    # A ticketless NSZ (no .tik: its NCAs were converted from title-key to standard crypto, which rewrites their headers) has NCAs whose SHA-256 is no longer their name,
+    # as nsz says (it skips the check for them: Fs/Nsp.py ticketless): Metroid Dread's base game decompressed by nsz itself to the same hash. Cartridge dumps (XCZ) have no tickets
+    # and are never converted, so they keep the check
+    with open(src, 'rb') as f: ticketless = f.read(4) == b'PFS0' and not any(e[0].lower().endswith('.tik') for e in p)
     try:
         with open(src, 'rb') as f, open(tmp, 'wb') as out:
             out.write(hdr); done(len(hdr))
@@ -169,7 +173,7 @@ def decompress(src, dst, done=lambda n: None):
                 if ncz:
                     try: sha = _ncz(f, off, off + n, out, done)
                     except zstd_mod().ZstdError as e: raise BuildError(f'{src.name}: {name} does not decompress ({e}): a damaged dump') from None
-                    if re.fullmatch(r'[0-9a-f]{32}', name.split('.')[0].lower()) and sha[:32] != name.split('.')[0].lower():
+                    if not ticketless and re.fullmatch(r'[0-9a-f]{32}', name.split('.')[0].lower()) and sha[:32] != name.split('.')[0].lower():
                         raise BuildError(f'{src.name}: {name} decompressed to an NCA whose SHA-256 is not its name ({sha[:32]}): a damaged dump')
                 else:
                     f.seek(off)

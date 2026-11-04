@@ -127,20 +127,32 @@ static int thr_running(const thr_t *t) {
     if (thread_info(t->mport, THREAD_BASIC_INFO, (thread_info_t)&bi, &n) != KERN_SUCCESS) return 0;
     return bi.run_state == TH_STATE_RUNNING;
 }
+// The higher-priority threads pinned to self's core that are running now: candidates are picked under G, and their kernel state is read after it is released (on Android that is a
+// /proc/self/task/<tid>/stat read each, tens of µs: with G held across them every other thread's SVC waited, the dispatcher a game waits for among them, and a thread blocked on G reads
+// as not running). Returns the first busy one (its handle, priority, last SVC and lr in *b) or 0
+typedef struct { thr_t *t; uint32_t handle; int prio, svc; uint64_t lr; } peer_t;
+static int busy_peer(thr_t *self, peer_t *b) {
+    uint64_t bit = 1ull << (self->core & 63); peer_t c[64]; int n = 0;
+    pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < 64; t = t->all)
+        if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && !t->wkind && !t->sleeping) c[n++] = (peer_t){t, t->handle, t->prio, t->last_svc, t->last_lr};
+    pthread_mutex_unlock(&G);
+    for (int i = 0; i < n; i++) if (thr_running(c[i].t)) { if (b) *b = c[i]; return 1; }
+    return 0;
+}
+// One look: whether a higher-priority thread pinned to the caller's core is running now (0 for a non-guest caller); the caller's handle and priority for logs
+int dm_core_peer_busy(uint32_t *handle, int *prio) {
+    thr_t *self = pthread_getspecific(g_keythr); if (handle) *handle = self ? self->handle : 0; if (prio) *prio = self ? self->prio : 0;
+    return self ? busy_peer(self, NULL) : 0;
+}
 int dm_yield_to_core_peers(unsigned max_us) {
     thr_t *self = pthread_getspecific(g_keythr); if (!self) return 0;
-    uint64_t bit = 1ull << (self->core & 63), t0 = now_ns(); int waited = 0;
+    uint64_t t0 = now_ns(); int waited = 0; peer_t b;
     for (;;) {
-        thr_t *busy = NULL;
-        pthread_mutex_lock(&G);
-        for (thr_t *t = g_all; t && !busy; t = t->all)
-            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_running(t)) busy = t;
-        uint32_t bh = busy ? busy->handle : 0; int bp = busy ? busy->prio : 0; uint64_t blr = busy ? busy->last_lr : 0; int bsvc = busy ? busy->last_svc : 0;
-        pthread_mutex_unlock(&G);
-        if (!busy) return waited;
+        if (!busy_peer(self, &b)) return waited;
         if (now_ns() - t0 > (uint64_t)max_us * 1000) {
-            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)blr);   // the first few cap hits: who waits, who keeps running
-                LOG("same-core preemption yield hit its cap: thread %#x (priority %d core %d) waits for %#x (priority %d, last svc %#x lr=%s+%#llx)", self->handle, self->prio, self->core, bh, bp, bsvc, m ? m->name : "?", (unsigned long long)(m ? blr - (uint64_t)m->base : blr)); }
+            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)b.lr);   // the first few cap hits: who waits, who keeps running
+                LOG("same-core preemption yield hit its cap: thread %#x (priority %d core %d) waits for %#x (priority %d, last svc %#x lr=%s+%#llx)", self->handle, self->prio, self->core, b.handle, b.prio, b.svc, m ? m->name : "?", (unsigned long long)(m ? b.lr - (uint64_t)m->base : b.lr)); }
             return -1;
         }
         { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;
@@ -519,16 +531,14 @@ void svc_thread_dump(void) {
             if (!guest && ths[i] != mach_thread_self() && thread_suspend(ths[i]) == KERN_SUCCESS) {
                 arm_thread_state64_t st; mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
                 if (thread_get_state(ths[i], ARM_THREAD_STATE64, (thread_state_t)&st, &n) == KERN_SUCCESS) {
-                    char line[1200]; int p = snprintf(line, sizeof line, "[dm] host thread %#x:", ths[i]);
+                    char nm[64]; crash_thread_name(ths[i], nm, sizeof nm);
+                    char line[1600]; int p = snprintf(line, sizeof line, "[dm] host thread %#x '%s':", ths[i], nm);
                     uint64_t fp = __darwin_arm_thread_state64_get_fp(st), pc = __darwin_arm_thread_state64_get_pc(st);
-                    for (int k = 0; k < 12 && p < (int)sizeof line - 80; k++) {
-                        Dl_info di; module_t *m = module_of((void *)pc);
-                        if (m) p += snprintf(line + p, sizeof line - p, " %s+%#llx", m->name, pc - (uint64_t)m->base);
-                        else if (dladdr((void *)pc, &di) && di.dli_sname) p += snprintf(line + p, sizeof line - p, " %s+%#lx", di.dli_sname, (unsigned long)(pc - (uint64_t)di.dli_saddr));
-                        else p += snprintf(line + p, sizeof line - p, " %#llx", pc);
+                    for (int k = 0; k < 12 && p < (int)sizeof line - 120; k++) {
+                        char b[192]; crash_addr_str(b, sizeof b, pc); p += snprintf(line + p, sizeof line - p, " %s", b);
                         uint64_t fr[2]; vm_size_t g2 = 0;
                         if (!fp || vm_read_overwrite(mach_task_self(), fp, 16, (vm_address_t)fr, &g2) || g2 != 16 || fr[0] <= fp) break;
-                        fp = fr[0]; pc = fr[1];
+                        fp = fr[0]; pc = crash_code_addr(fr[1]);
                     }
                     fprintf(stderr, "%s\n", line);
                 }
@@ -684,6 +694,14 @@ int svc_thread(int num, uint64_t *regs) {
     if (me) me->yield_pending = 0;
     return r;
 }
+// DM_SLEEP_BT=<min ms>[-<max ms>] (live, a DM_CTL env line): the next 64 sleeps and timed waits (SleepThread, condition variables, WaitForAddress,
+// WaitSynchronization) whose time lies in that range, with their backtraces: who paces a game that holds a frame rate with no present interval (a frame limiter)
+static void wait_bt(const char *what, int64_t ns, uint64_t fp) {
+    static char last[32]; static double lo, hi; static _Atomic int nbt; const char *e = getenv("DM_SLEEP_BT");
+    if (!e || !*e) return;
+    if (strncmp(e, last, sizeof last - 1)) { snprintf(last, sizeof last, "%s", e); char *d; lo = strtod(e, &d); hi = *d == '-' ? strtod(d + 1, NULL) : 1e9; atomic_store(&nbt, 0); }
+    if (lo > 0 && ns >= (int64_t)(lo * 1e6) && ns <= (int64_t)(hi * 1e6) && atomic_fetch_add(&nbt, 1) < 64) { void dm_backtrace(uint64_t fp); LOG("%s %.2f ms", what, ns / 1e6); dm_backtrace(fp); }
+}
 static int svc_thread_impl(int num, uint64_t *regs) {
     { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; } }
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
@@ -714,6 +732,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x0A: thread_exit(cur()); return 1;
     case 0x0B: {  // SleepThread(x0 ns); 0/-1/-2 = the various kinds of yield
         int64_t ns = (int64_t)regs[0];
+        wait_bt("SleepThread", ns, regs[29]);
         if ((ns > 0 && dm_detclock_enabled()) || ns >= 20000) dm_guest_sleep_ns(ns);
         // Yield (0 / -1 / -2), and sleeps shorter than 20 µs, which sleep_precise would return from at once: Super Mario Galaxy's Hagi polls with SleepThread(100 ns) (main+0x517c),
         // which kept a core at 100% (1.4 billion calls in 200 s); as yields they get the back-off below.
@@ -788,6 +807,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
+        wait_bt("condition wait", (int64_t)regs[3], regs[29]);
         pthread_mutex_lock(&G);
         // The order matters: first set the condition key = 1, then release the mutex. The SDK's InternalConditionVariable::Signal first reads the condition key in user mode, and does not issue svc 0x1D if it is 0;
         // grabbing the mutex in user mode does not go through G either. It used to do lock_handoff first and set the key after: after the release and before the key was set, another thread could grab the lock in user mode, change the condition, read key 0 and not wake anyone,
@@ -822,6 +842,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     }
 
     case 0x34: {  // WaitForAddress(x0 address, w1 type, x2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal, 3 wait if the 64-bit value is equal
+        wait_bt("WaitForAddress", (int64_t)regs[3], regs[29]);
         // (Horizon 18; SDK 19's nn::os::WaitForAddress(const long*, long) uses it, which before fell into the 32-bit less-than test)
         thr_t *t = cur(); uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2];
         pthread_mutex_lock(&G);
@@ -876,6 +897,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         regs[0] = (uint64_t)r; return 1;
     }
     case 0x18: {  // WaitSynchronization(→w1 index; x1 handle array, w2 count, x3 timeout)
+        wait_bt("WaitSynchronization", (int64_t)regs[3], regs[29]);
         thr_t *t = cur(); const uint32_t *hs = (const uint32_t *)regs[1]; int n = (int)regs[2]; int64_t ns = (int64_t)regs[3];
         int64_t deadline = ns > 0 ? (dm_detclock_enabled() ? (int64_t)guest_ns() : now_mono_ns()) + ns : 0;
         pthread_mutex_lock(&G);

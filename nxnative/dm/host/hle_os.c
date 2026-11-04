@@ -197,6 +197,37 @@ HLE_FORCE("_ZN2nn2os21AllocateAddressRegionEPmm", "passed straight to the SDK; t
     pthread_mutex_unlock(&g_ar_mu);
     return r;
 }
+// StandardAllocator over more address space than the alias region holds: with virtual address memory a game may initialize its allocator over what the Switch's 64 GB alias region
+// allows (Pokémon Legends: Arceus 1.1.1: Initialize(nullptr, 32 GB) from nninitStartup, main+0x2779d8c; the SDK's AllocateAddressRegion refused it and nninitStartup reached Break at
+// sdk+0x39fb54). With a null address and a size that does not fit, the size becomes what the alias region has room for: less the regions made so far, the SDK's 62 MB node area (the
+// node-area cut, sdk_patches.py) and 256 MB for the regions made after it, in 32 MB steps (upstream's host rule, "StandardAllocators over 12 to 62 GB of address space"). The SDK lays out
+// the region and its CentralHeap from that size, and the pool, not the region, bounds what the heap maps. A request that fits is passed as it is
+static void (*g_sa_init)(void *, void *, size_t), (*g_sa_init_b)(void *, void *, size_t, bool);
+static pthread_once_t g_sa_init_once = PTHREAD_ONCE_INIT;
+static void sa_init_find(void) {
+    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
+    g_sa_init = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvm") : NULL;
+    g_sa_init_b = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator10InitializeEPvmb") : NULL;
+}
+static size_t sa_cap(void *addr, size_t size) {
+    if (addr) return size;
+    uint8_t *al; size_t ac; uint64_t mapped; svc_alias_range(&al, &ac, &mapped);
+    pthread_mutex_lock(&g_ar_mu); uint64_t used = g_ar_bytes; pthread_mutex_unlock(&g_ar_mu);
+    uint64_t keep = used + 0x3e00000 + 0x10000000, room = ac > keep ? (ac - keep) & ~(uint64_t)0x1ffffff : 0;
+    if (size <= room || !room) return size;
+    LOG("[mem] StandardAllocator::Initialize(nullptr, %.2f GB): %.2f GB of address space, what the alias region (%.2f GB) has room for", size / 1073741824.0, room / 1073741824.0, ac / 1073741824.0);
+    return (size_t)room;
+}
+HLE_FORCE("_ZN2nn3mem17StandardAllocator10InitializeEPvm", "passed to the SDK; with virtual address memory, a size the alias region has no room for is lowered to the room there is", void, h_mem_SAInit, void *self, void *addr, size_t size) {
+    pthread_once(&g_sa_init_once, sa_init_find);
+    if (!g_sa_init) die("StandardAllocator::Initialize(void *, size_t) not found in the SDK");
+    g_sa_init(self, addr, sa_cap(addr, size));
+}
+HLE_FORCE("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", "passed to the SDK; with virtual address memory, a size the alias region has no room for is lowered to the room there is", void, h_mem_SAInitB, void *self, void *addr, size_t size, bool cache) {
+    pthread_once(&g_sa_init_once, sa_init_find);
+    if (!g_sa_init_b) die("StandardAllocator::Initialize(void *, size_t, bool) not found in the SDK");
+    g_sa_init_b(self, addr, sa_cap(addr, size), cache);
+}
 HLE_FORCE("_ZN2nn2os17FreeAddressRegionEm", "passed straight to the SDK; the regions are counted", Result, h_os_FreeAR, uint64_t addr) {
     pthread_once(&g_ar_once, ar_init);
     Result r = g_ar_free(addr);

@@ -49,9 +49,25 @@ CUTS = {
     (0x37bdcc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x37bf2c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # SDK 11.4.3 sdk 2d369d99 (Unpacking's base game 1.0 = v0, 13 Sentinels: Aegis Rim, Metroid Dread, Monster Hunter Rise, Big Brain Academy: Brain vs. Brain): the cuts of Unpacking 2.01's
+  # SDK 13.3.2 build above, carried over with nso_fnmap.py and checked by disassembly (the same constructor at sdk+0x34e0b8 and the same size alignment at sdk+0x34e258; the two node area
+  # movs are the only ones in the module). A base-only Unpacking port (GitHub issue #26) went without them: its 3.14 GB StandardAllocator region sat at +1.00 GB after the 1 GB node area
+  # and ended at +4.14 GB of the 4.375 GB alias region, 0.23 GB from the end (it reached the first room without a refusal; update 2.01's Unity regions were refused there). The other
+  # four games set a heap in a 256 MB alias region, as Celeste does on its cut SDK 15.3.2 build; they were not run again with these cuts
+  '2d369d9999e3e10e665106f840ffff9b': [
+    (0x34e0c8, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34e164, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x34e2c4, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) sdk (SDK 19.3.11): the same node area cut. The constructor is at sdk+0x1423ec (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte
   # nodes, the area then registered as occupied at +0x142468). With main's allocator region below, the guest block fits the 5 GB proven on a phone
   'df7a3960c74c3a4803f826c587153252': [
+    (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # Castlevania: Belmont's Curse 1.1.0 (v65536) sdk (SDK 19.3.16, Unity 2022.3.62f2, virtual address memory): the same node area cut; the constructor's two movs are at the same
+  # offsets as in Pokémon Legends: Z-A's SDK 19.3.11 build (the only matches of either encoding in the module)
+  '8af286d7bfb124125a15e96a39cb1ab7': [
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
@@ -159,5 +175,26 @@ CUTS = {
   '148394139d9d26ca8afd5c9ba5d30601': [
     (0x14fbf0, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x14fc5c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11.4.0, Kirby and the Forgotten Land's build, which has no virtual address memory and never makes an address region; offsets from
+  # upstream's Arceus port): nninitStartup (main+0x2779d8c) initializes StandardAllocator over 32 GB of virtual address memory, which the host caps to what the alias region holds (4.06 GB).
+  # That fits the 4.375 GB alias region only after a 62 MB node area and with 32 MB alignment: VammManager::AllocateAddressRegion's placement (sdk+0x34e1d8) aligns regions of 1 GB and
+  # more to 1 GB, and without the cuts StandardAllocator::Initialize (sdk+0x2f98e4) reached Break at sdk+0x39fb54 upstream
+  'b39add63421be525d352e576dab438d3': [
+    (0x34e048, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34e0e4, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x34e244, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
+  # Paper Mario: The Origami King 1.0.1 (v65536) sdk (SDK 8.3.1; Blasphemous 1.0.8 ships it too, with no virtual address memory): DRAGON QUEST XI S's AddressRegionManager at other offsets
+  # (offsets from upstream's SDK-wide rules, implementation 1 of each). nninitStartup makes the game's malloc a StandardAllocator over 62 GB of virtual address memory (main+0x5c05ac), which the
+  # host caps to 4.06 GB (hle_os.c): it fits the 4.375 GB alias region only after a 62 MB node area and without the 1 GB alignment. The constructor is at sdk+0xc96e0 (the limit at
+  # +0xc96f0 and the occupied length at +0xc9790, both orr w9,wzr,#0x3fe00000); VammManager::AllocateAddressRegion aligns a region by its size (+0xc98f4 / +0xc98fc / +0xc9900),
+  # the 4 MB and 32 MB classes cut to SDK 20's 2 MB as on Paper Mario: The Thousand-Year Door's build
+  '86a2afd863c99062d666226a9e7aa764': [
+    (0xc96f0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: node area limit orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0xc9790, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0xc98fc, 'ea030232', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more orr w10,wzr,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+    (0xc98f4, 'eb030732', '0b04a052', 'AllocateAddressRegion: alignment of regions from 32 MB to 1 GB orr w11,wzr,#0x2000000 → mov w11,#0x200000 (2 MB, as SDK 20)'),
+    (0xc9900, 'e8030a32', '0804a052', 'AllocateAddressRegion: alignment of regions from 4 MB to 32 MB orr w8,wzr,#0x400000 → mov w8,#0x200000 (2 MB, as SDK 20)'),
   ],
 }
