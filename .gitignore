@@ -6,6 +6,7 @@
 
 # Android build outputs
 /nxnative/dm/android/out/
+/nxnative/dm/android/belmont/out/
 *.apk
 *.spv
 *.dmsv

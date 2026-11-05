@@ -57,6 +57,16 @@ PORT = [p for p in srcs('android/compat/*.c', 'android/*.c') if not (p.name == '
 ASM = srcs('host/entry.S', 'gfx/nvn/nvn_entry.S', 'gfx/nvn/nvn_thunks.S')
 VPX = srcs('third_party/libvpx/**/*.c')
 ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader bundle's SPIR-V (gfx_vk_shader.c bundle_spv)
+# Castlevania: Belmont's Curse only: igawa6's Eden Duo companion module and its host for the second screen page (dm/android/belmont, C++, kalasyan fork)
+BELMONT_GAME = '0100BA4026E94000'
+BELMONT = srcs('android/belmont/module/*.cpp', 'android/belmont/third_party/*.cpp', 'android/belmont/third_party/lz4.c', 'android/belmont/belmont_host.cpp') if a.game.upper() == BELMONT_GAME else []
+if BELMONT:   # the package's layout, embedded: gen/<game>/belmont_manifest.c
+    mf = DM / 'android/belmont/manifest.json'; mc = gen / a.game / 'belmont_manifest.c'
+    if not mc.exists() or mc.stat().st_mtime < mf.stat().st_mtime:
+        data = mf.read_bytes()
+        body = ',\n'.join(','.join(str(b) for b in data[i:i + 64]) for i in range(0, len(data), 64))
+        mc.write_text(f'// generated from dm/android/belmont/manifest.json by build.py\nconst unsigned char belmont_manifest_json[] = {{\n{body},0}};\nconst unsigned belmont_manifest_json_len = {len(data)};\n')
+    BELMONT.append(mc)
 
 INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
@@ -66,8 +76,12 @@ CFLAGS = [TARGET, f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffi
 VPX_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/libvpx/config"}', '-w']
 ZSTD_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-w']   # its API stays inside libdmhost.so
 
+CXX = str(bin_ / ('clang++.exe' if os.name == 'nt' else 'clang++'))
+BL = DM / 'android/belmont'
+BELMONT_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-D_GNU_SOURCE', '-w', f'-I{BL / "eden"}', f'-I{BL / "third_party"}', f'-I{BL / "module"}', f'-I{BL}', f'-I{DM / "android"}']
+
 import hashlib, shutil
-_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, CC)).encode()).hexdigest()
+_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, BELMONT_FLAGS, CC)).encode()).hexdigest()
 if not _stamp.exists() or _stamp.read_text() != _flags:   # compiler flags changed: every object is rebuilt
     shutil.rmtree(obj, ignore_errors=True); obj.mkdir(parents=True, exist_ok=True); _stamp.write_text(_flags)
 
@@ -82,13 +96,17 @@ def dep_stale(o, d, s):
     return False
 
 def compile_one(s):
-    rel = s.relative_to(DM); o = obj / (str(rel).replace(os.sep, '_').replace('/', '_') + '.o'); d = o.with_suffix('.d')
+    rel = s.relative_to(DM) if s.is_relative_to(DM) else s.relative_to(out); o = obj / (str(rel).replace(os.sep, '_').replace('/', '_') + '.o'); d = o.with_suffix('.d')
     src = s
     if s.suffix == '.S':   # Mach-O assembly → ELF
         src = gen / (s.stem + '.elf.S')
         if not src.exists() or src.stat().st_mtime < s.stat().st_mtime:
             subprocess.run([sys.executable, str(DM / 'android/tools/darwin2elf.py'), str(s), str(src)], check=True)
     if not dep_stale(o, d, src): return s, o, 0, ''
+    if s in BELMONT:   # C++20 (the module), or plain C (lz4, the manifest)
+        cc = CXX if s.suffix == '.cpp' else CC
+        r = subprocess.run([cc] + BELMONT_FLAGS + (['-std=c++20'] if s.suffix == '.cpp' else []) + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
+        return s, o, r.returncode, r.stderr
     flags = VPX_FLAGS if 'third_party/libvpx' in str(rel).replace(os.sep, '/') else ZSTD_FLAGS if 'third_party/zstd' in str(rel).replace(os.sep, '/') else [TARGET] + DBG if s.suffix == '.S' else CFLAGS + INC
     r = subprocess.run([CC] + flags + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
     return s, o, r.returncode, r.stderr
@@ -104,20 +122,22 @@ def build(files):
 
 all_files = HOST + GFX + PORT + ASM
 objs, failed = build(all_files)
-vobjs, vfailed = build(VPX + ZSTD)
+vobjs, vfailed = build(VPX + ZSTD + BELMONT)
 failed += vfailed
-print(f'compiled {len(all_files) + len(VPX) + len(ZSTD)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
+print(f'compiled {len(all_files) + len(VPX) + len(ZSTD) + len(BELMONT)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
 LIBS = ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmediandk', '-lz', '-lm', '-ldl']   # -lz: the gamepad theme's PNGs (overlay_theme.c)
 LDFLAGS = [TARGET, '-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc']
+LD = CC
+if BELMONT: LD = CXX; LDFLAGS += ['-static-libstdc++']   # the C++ runtime inside libdmhost.so (the APK carries no libc++_shared.so)
 if a.exe:
-    r = subprocess.run([CC] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
+    r = subprocess.run([LD] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
     print(r.stderr.strip() if r.returncode else f'linked {out / "dmhost"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
 if a.lib:
-    r = subprocess.run([CC] + LDFLAGS + ['-shared', '-Wl,-soname,libdmhost.so', '-o', str(out / 'libdmhost.so')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
+    r = subprocess.run([LD] + LDFLAGS + ['-shared', '-Wl,-soname,libdmhost.so', '-o', str(out / 'libdmhost.so')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
     print(r.stderr.strip() if r.returncode else f'linked {out / "libdmhost.so"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
     if a.release:   # the static symbol table goes too (the dynamic one stays: ANativeActivity_onCreate)
@@ -130,7 +150,6 @@ if a.adrenotools:
     AT = DM / 'third_party/libadrenotools'; LN = AT / 'lib/linkernsbypass'
     ATF = [TARGET, '-O2'] + DBG + ['-fPIC', '-w', f'-I{AT / "include"}', f'-I{AT}', f'-I{LN}']
     ATL = ['-fuse-ld=lld', '-shared', '-Wl,-z,max-page-size=16384', '-static-libstdc++', '-landroid', '-llog', '-ldl']
-    CXX = str(bin_ / ('clang++.exe' if os.name == 'nt' else 'clang++'))
     libs = [('libadrenotools.so', [AT / 'src/driver.cpp', AT / 'src/bcenabler.cpp', LN / 'android_linker_ns.cpp', LN / 'elf_soname_patcher.cpp'], []),
             ('libhook_impl.so', [AT / 'src/hook/hook_impl.cpp', LN / 'android_linker_ns.cpp', LN / 'elf_soname_patcher.cpp'], ['-fvisibility=hidden'])]
     libs += [(f'lib{h}.so', [AT / f'src/hook/{h}.c'], ['-Wl,-z,global', f'-L{out}', '-lhook_impl']) for h in ('main_hook', 'file_redirect_hook', 'gsl_alloc_hook')]
