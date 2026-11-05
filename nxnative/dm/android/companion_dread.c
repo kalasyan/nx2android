@@ -79,6 +79,7 @@ static void scan(void) {
 // ---- the state, read each pass ----
 static struct { int area, life, lifemax, mis, mismax; float x, y; int64_t moved; } g_st;
 static int64_t g_next_scan, g_backoff = 2000000000;   // the next scan; the wait after a scan that found nothing live, doubling to 16 s
+static void grid_tick(void);   // the game's own explored map, below
 void dm_dread_tick(void) {
     if (!dm_dread_active()) return;
     int64_t now = (int64_t)now_ns();
@@ -96,6 +97,7 @@ void dm_dread_tick(void) {
         if (!g_ncand) { g_next_scan = now + g_backoff; if (g_backoff < 16000000000) g_backoff *= 2; }
     }
     if (!g_tab) return;
+    grid_tick();
     const volatile tvalue *t = g_tab;
     float x = t[NX_X].v.n, y = t[NX_Y].v.n;
     if (x != g_st.x || y != g_st.y) g_st.moved = now;
@@ -246,6 +248,103 @@ static void view_set(int w, int h, int top) {   // g_k, g_cx, g_cy for this pass
     g_k = k; g_cx = g_vcx; g_cy = g_vcy;
     pthread_mutex_unlock(&g_vmu);
 }
+// ---- the game's own explored map ----
+// Dread keeps what the player has explored in its minimap grid (CMinimapGrid): 650x300 cells of 0x48 bytes, 100 world units square, inline at
+// grid+0x118; each cell holds its world x, y (floats at +0, +4) and its state (+8: 0 unknown, 1 a fringe the game hides, 2..5 seen, 6 walked).
+// The grid's current scenario name: *(*(grid+0x110)+0x10). The layout comes from igawa6's eden-duo-companions (GPL-3.0, Metroid Dread module).
+// The array is found by its shape in the guest heap (a slice per pass), kept while it keeps the shape, and drawn instead of the page's own fog;
+// the page's fog (above) is the fallback while it is not found.
+#define GCOLS 650
+#define GROWS 300
+#define GSTRIDE 0x48
+#define GROWB ((size_t)GCOLS * GSTRIDE)
+#define GBYTES ((size_t)GROWS * GROWB)
+static const uint8_t *g_cells; static float g_gx0, g_gy0, g_gdy; static int g_garea;   // cell 0, its world x/y, +-100 per row, the area it is of
+static uint8_t *g_hb; static size_t g_hn;   // the guest heap
+static struct { uintptr_t lo, hi; } g_rng[256]; static int g_nrng, g_ri; static uintptr_t g_rcur; static int64_t g_gnext;
+static int in_heap(const void *p, size_t n) { uintptr_t a = (uintptr_t)p; return g_hb && a >= (uintptr_t)g_hb && a + n <= (uintptr_t)g_hb + g_hn; }
+static int in_rng(const void *p, size_t n) { uintptr_t a = (uintptr_t)p; for (int i = 0; i < g_nrng; i++) if (a >= g_rng[i].lo && a + n <= g_rng[i].hi) return 1; return 0; }
+static int cell_at(const uint8_t *c, float *x, float *y) {
+    if (c[8] > 6 || c[0x38] > 1) return 0;
+    memcpy(x, c, 4); memcpy(y, c + 4, 4); return isfinite(*x) && isfinite(*y) && fabsf(*x) <= 1e6f && fabsf(*y) <= 1e6f;
+}
+static int near1(float a, float b) { return fabsf(a - b) < 0.5f; }
+static int grid_area(const uint8_t *cells) {   // the area the grid is of, from its scenario name (0: unreadable)
+    const uint8_t *grid = cells - 0x118; uint64_t sid, nm;
+    memcpy(&sid, grid + 0x110, 8); if (!in_heap((void *)(uintptr_t)sid, 0x18)) return 0;
+    memcpy(&nm, (const uint8_t *)(uintptr_t)sid + 0x10, 8);
+    const char *n = (const char *)(uintptr_t)nm; if (!in_heap(n, 16) && !in_rng(n, 16)) return 0;
+    for (int a = 1; a < NAREA; a++) if (!strncmp(n, AREA_ID[a], strlen(AREA_ID[a])) && !n[strlen(AREA_ID[a])]) return a;
+    return 0;
+}
+static int grid_check(const uint8_t *b) {   // b is cell 0: the corners keep the grid's shape
+    float x0, y0, x1, y1, xe, ye, xr, yr;
+    if (!in_rng(b - 0x118, GBYTES + 0x118)) return 0;
+    if (!cell_at(b, &x0, &y0) || !cell_at(b + GSTRIDE, &x1, &y1) || !cell_at(b + (GCOLS - 1) * GSTRIDE, &xe, &ye) || !cell_at(b + GROWB, &xr, &yr)) return 0;
+    return near1(x1, x0 + 100) && near1(y1, y0) && near1(xe, x0 + 100 * (GCOLS - 1)) && near1(ye, y0) && near1(xr, x0) && near1(fabsf(yr - y0), 100);
+}
+static void grid_ranges(void) {   // the readable mappings of the guest heap
+    g_nrng = 0; FILE *f = fopen("/proc/self/maps", "r"); char line[512]; if (!f) return;
+    uintptr_t lo = (uintptr_t)g_hb, hi = lo + g_hn;
+    while (fgets(line, sizeof line, f) && g_nrng < 256) {
+        unsigned long s, e; char perm[8];
+        if (sscanf(line, "%lx-%lx %7s", &s, &e, perm) != 3 || perm[0] != 'r' || e <= lo || s >= hi) continue;
+        if (g_nrng && g_rng[g_nrng - 1].hi == (s > lo ? s : lo)) g_rng[g_nrng - 1].hi = e < hi ? e : hi;   // adjacent mappings as one
+        else { g_rng[g_nrng].lo = s > lo ? s : lo; g_rng[g_nrng].hi = e < hi ? e : hi; g_nrng++; }
+    }
+    fclose(f); g_ri = 0; g_rcur = g_nrng ? g_rng[0].lo : 0;
+}
+static const uint8_t *grid_walk(const uint8_t *p) {   // p and the cell after it are a row's cells: back to cell 0, checked
+    float x, y, bx, by; int run = 1; const uint8_t *c = p;
+    if (!cell_at(c, &x, &y)) return NULL;
+    for (; run < 128; run++, c += GSTRIDE) { float nx, ny; if (!in_rng(c + GSTRIDE, 0x40) || !cell_at(c + GSTRIDE, &nx, &ny) || !near1(nx, x + 100) || !near1(ny, y)) break; x = nx; y = ny; }
+    if (run < 128) return NULL;   // 128 cells 100 apart are not chance
+    c = p; cell_at(c, &x, &y);
+    for (int i = 0; i < GCOLS && in_rng(c - GSTRIDE, 0x40) && cell_at(c - GSTRIDE, &bx, &by) && near1(bx, x - 100) && near1(by, y); i++) { c -= GSTRIDE; x = bx; }
+    cell_at(c, &x, &y);
+    for (int i = 0; i < GROWS && in_rng(c - GROWB, 0x40) && cell_at(c - GROWB, &bx, &by) && near1(bx, x) && near1(fabsf(by - y), 100); i++) { c -= GROWB; y = by; }
+    return grid_check(c) ? c : NULL;
+}
+static void grid_tick(void) {   // the companion thread, each pass
+    int64_t now = (int64_t)now_ns();
+    if (!g_hb) { svc_heap_range(&g_hb, &g_hn); if (!g_hb) return; }
+    if (g_cells) {
+        if (grid_check(g_cells)) {
+            int a = grid_area(g_cells); static int said;
+            if (!a && !said++) LOG("[companion] Dread: the minimap grid's area name is not readable: taken as Samus's area");
+            g_garea = a ? a : g_st.area; return;
+        }
+        LOG("[companion] Dread: the game's minimap grid went"); g_cells = NULL; g_garea = 0; g_nrng = 0;
+    }
+    if (now < g_gnext) return;
+    if (!g_nrng) { grid_ranges(); if (!g_nrng) { g_gnext = now + 2000000000; return; } }
+    size_t budget = 48u << 20;   // bytes looked at per pass
+    while (budget && g_ri < g_nrng) {
+        uintptr_t hi = g_rng[g_ri].hi; if (g_rcur < g_rng[g_ri].lo) g_rcur = (g_rng[g_ri].lo + 7) & ~(uintptr_t)7;
+        uintptr_t end = hi - 0x48 - 0x40 < g_rcur + budget ? hi - 0x48 - 0x40 : g_rcur + budget;
+        for (uintptr_t a = g_rcur; a < end; a += 8) {
+            const uint8_t *c = (const uint8_t *)a; float x0, y0, x1, y1;
+            if (c[8] > 6 || c[0x38] > 1 || c[8 + GSTRIDE] > 6) continue;
+            memcpy(&x0, c, 4); memcpy(&x1, c + GSTRIDE, 4); if (!(x1 - x0 > 99.5f && x1 - x0 < 100.5f)) continue;
+            memcpy(&y0, c + 4, 4); memcpy(&y1, c + GSTRIDE + 4, 4); if (!near1(y0, y1)) continue;
+            const uint8_t *b = grid_walk(c); if (!b) continue;
+            float bx, by, rx, ry; cell_at(b, &bx, &by); cell_at(b + GROWB, &rx, &ry);
+            g_cells = b; g_gx0 = bx; g_gy0 = by; g_gdy = ry - by; g_garea = grid_area(b); if (!g_garea) g_garea = g_st.area;
+            LOG("[companion] Dread: the game's minimap grid at %p (cell 0 at %.0f, %.0f, rows %+.0f), area %s", (void *)b, bx, by, g_gdy, g_garea ? AREA_ID[g_garea] : "?");
+            return;
+        }
+        budget -= end > g_rcur ? end - g_rcur : 0; g_rcur = end;
+        if (end >= hi - 0x48 - 0x40 || end < g_rcur) { g_ri++; g_rcur = g_ri < g_nrng ? g_rng[g_ri].lo : 0; }
+    }
+    if (g_ri >= g_nrng) { g_nrng = 0; g_gnext = now + 3000000000; }   // a whole sweep found none: again in 3 s, from a fresh map of the heap
+}
+static int grid_state(float wx, float wy) {   // the game's state of the cell at a world point (-1: outside the grid)
+    int c = (int)floorf((wx - g_gx0) / 100), r = (int)floorf((wy - g_gy0) / g_gdy);
+    if (c < 0 || r < 0 || c >= GCOLS || r >= GROWS) return -1;
+    return g_cells[(size_t)r * GROWB + (size_t)c * GSTRIDE + 8];
+}
+static uint32_t dim(uint32_t c) { return 0xff000000u | ((c >> 1) & 0x7f7f7fu); }
+
 int dm_dread_draw(page *p) {
     if (!dm_dread_active()) return 0;
     int s = p->w / (6 * 28 + 6); if (s > p->h / (11 * 16)) s = p->h / (11 * 16); if (s < 2) s = 2;   // as companion_android.c's page
@@ -258,11 +357,25 @@ int dm_dread_draw(page *p) {
     }
     if (area != g_map_area) { map_load(area); if (g_map.ntri) seen_load(area); }
     if (g_map.ntri) {
-        if (g_seen.area == area && g_seen.bit) { seen_reveal(g_st.x, g_st.y); if (g_seen.dirty && (int64_t)now_ns() - g_seen.saved > 10000000000LL) seen_save(); }
+        if (g_seen.area == area && g_seen.bit && !(g_cells && g_garea == area)) { seen_reveal(g_st.x, g_st.y); if (g_seen.dirty && (int64_t)now_ns() - g_seen.saved > 10000000000LL) seen_save(); }
         view_set(p->w, p->h, top);
         if (g_pic_area != area || g_pic_w != p->w || g_pic_h != p->h || g_top != top || g_pk != g_k || g_pcx != g_cx || g_pcy != g_cy) pic_make(p->w, p->h, top, area);
     }
-    if (g_map.ntri && g_pic && g_seen.bit) {   // the picture where Samus has been, the fog elsewhere
+    int game = g_map.ntri && g_pic && g_cells && g_garea == area;   // the game's own explored map
+    if (game) {   // walked cells bright, seen ones dim, the rest not drawn
+        if (g_colc_n != p->w) { free(g_colc); g_colc = malloc(sizeof *g_colc * p->w); g_colc_n = g_colc ? p->w : 0; }
+        if (g_rowc_n != p->h) { free(g_rowc); g_rowc = malloc(sizeof *g_rowc * p->h); g_rowc_n = g_rowc ? p->h : 0; }
+        if (g_colc && g_rowc) {
+            for (int x = 0; x < p->w; x++) { int c = (int)floorf((g_cx + (x + 0.5f - g_scx) / g_k - g_gx0) / 100); g_colc[x] = c >= 0 && c < GCOLS ? c : -1; }
+            for (int y = 0; y < p->h; y++) { int r = (int)floorf((g_cy - (y + 0.5f - g_scy) / g_k - g_gy0) / g_gdy); g_rowc[y] = y >= top && r >= 0 && r < GROWS ? r : -1; }
+            for (int y = top; y < p->h; y++) {
+                uint32_t *d = p->px + (size_t)y * p->stride; const uint32_t *src = g_pic + (size_t)y * p->w; int r = g_rowc[y];
+                if (r < 0) { for (int x = 0; x < p->w; x++) d[x] = C_BG; continue; }
+                const uint8_t *row = g_cells + (size_t)r * GROWB + 8;
+                for (int x = 0; x < p->w; x++) { int c = g_colc[x]; uint8_t st = c >= 0 ? row[(size_t)c * GSTRIDE] : 0; d[x] = st >= 6 || src[x] == C_BG ? (st > 1 ? src[x] : C_BG) : st > 1 ? dim(src[x]) : C_BG; }
+            }
+        }
+    } else if (g_map.ntri && g_pic && g_seen.bit) {   // the picture where Samus has been, the fog elsewhere
         if (g_colc_n != p->w) { free(g_colc); g_colc = malloc(sizeof *g_colc * p->w); g_colc_n = g_colc ? p->w : 0; }
         if (g_rowc_n != p->h) { free(g_rowc); g_rowc = malloc(sizeof *g_rowc * p->h); g_rowc_n = g_rowc ? p->h : 0; }
         if (g_colc && g_rowc) {
@@ -278,6 +391,7 @@ int dm_dread_draw(page *p) {
     } else fill(p, 0, 0, p->w, p->h, C_BG);
     fill(p, 0, 0, p->w, top, C_BAR);
     char b[96]; snprintf(b, sizeof b, "%s  E %d/%d  M %d/%d", AREA_NAME[area], g_st.life, g_st.lifemax, g_st.mis, g_st.mismax); text(p, m, m, s, 0xffffffff, b);
+    (void)grid_state;
     if (g_zoom > 1.05f) { snprintf(b, sizeof b, "x%.1f", g_zoom); text(p, p->w - m - (int)strlen(b) * 6 * s, m, s, 0xffb0b0b0, b); }
     if (g_map.ntri) { float x, y; sxy(g_st.x, g_st.y, &x, &y); float r = fmaxf(5, p->h / 90.0f); if (y - r * 1.6f >= top) { disc(p, x, y, r * 1.6f, 0xff000000); disc(p, x, y, r, 0xff20b0ff); } }
     else text(p, m, top + 2 * m, s, 0xffb0b0b0, "Sin mapa de esta zona");
