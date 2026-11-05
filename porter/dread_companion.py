@@ -1,6 +1,8 @@
 # Metroid Dread's companion page (kalasyan fork): what the page on a second screen needs from the game's files, as files to copy over the data pack.
 #   companion/<area>.nx2m           each area's map, from its minimap data (maps/levels/c10_samus/<area>/<area>.bmmap): the navigation mesh's
-#                                   triangles, the doors and the items, in the game's world units (nxnative/dm/android/companion_dread.c draws them)
+#                                   triangles, the water/heat/freeze/EMMI rooms, the doors, items, stations... with their map icons, in the game's
+#                                   world units (nxnative/dm/android/companion_dread.c draws them)
+#   companion/icons.nx2i            the game's map icons (textures/system/minimap/icons/icons.bctex), decoded
 #   RomFS/packs/system/system.pkg   the game's scripts with system/scripts/scenario.lc wrapped: the wrapper runs the original (kept as
 #                                   nx2a_scenario_original.lc) and keeps a Lua table with Samus's area, position, energy and missiles up to date every
 #                                   frame, which the host finds in memory (companion_dread.c)
@@ -165,19 +167,194 @@ def bmmap_read(data):
     return root
 
 
-def nx2m(root):   # companion_dread.c's map: "NX2M", version 1, bounds, triangles (x y × 3), doors (x y), items (x y)
+# ---- the game's map icons: textures/system/minimap/icons/icons.bctex, a 16-column atlas of 128-pixel cells (cell names from eden-duo-companions'
+# Metroid Dread package, GPL-3.0; the ink rects are where a door or blockage icon has its pixels, stretched over the thing's box) ----
+ICON_ATLAS = 'textures/system/minimap/icons/icons.bctex'
+ICONS = {  # name: (row, column[, ink x0, y0, x1, y1 in the cell])
+    'Samus': (0, 0), 'Emmy': (0, 2), 'CentralUnit': (0, 3), 'ItemSphere': (0, 4), 'ItemCube': (2, 9), 'ItemEnergyTank': (0, 5),
+    'ItemEnergyFragment': (0, 6), 'ItemMissileTank': (0, 7), 'ItemMissileTankPlus': (0, 8), 'ItemPowerbombExpansion': (0, 9),
+    'DoorPowerL': (1, 0, 43, 27, 84, 101), 'DoorPowerR': (1, 1, 43, 27, 85, 101), 'DoorPowerLockedL': (2, 0, 43, 27, 85, 114),
+    'DoorPowerLockedR': (2, 1, 43, 27, 98, 114), 'DoorFrame': (0, 12, 44, 25, 86, 103), 'DoorFrame4x2': (0, 13, 39, 14, 90, 115),
+    'DoorFrameTrap': (5, 9, 14, 51, 114, 77), 'DoorFrameL': (0, 12, 44, 25, 86, 103), 'DoorFrameR': (0, 12, 44, 25, 86, 103),
+    'DoorClosedL': (0, 14, 45, 27, 84, 101), 'DoorClosedR': (0, 14, 45, 27, 84, 101), 'DoorOpenedL': (0, 14, 45, 27, 84, 101),
+    'DoorOpenedR': (0, 14, 45, 27, 84, 101), 'DoorChargeL': (2, 2, 45, 27, 83, 101), 'DoorChargeR': (2, 3, 45, 27, 83, 101),
+    'DoorChargeLockedL': (2, 4, 45, 27, 83, 101), 'DoorChargeLockedR': (2, 5, 44, 27, 83, 101), 'DoorGrappleL': (1, 2, 43, 26, 84, 101),
+    'DoorGrappleR': (1, 3, 45, 27, 85, 101), 'DoorWideL': (1, 4, 55, 28, 76, 101), 'DoorWideR': (1, 5, 52, 28, 73, 101),
+    'DoorPresenceL': (1, 6, 19, 24, 119, 102), 'DoorPresenceR': (1, 7, 10, 24, 110, 102), 'DoorShutter': (1, 9, 44, 14, 86, 113),
+    'DoorEmmyOpen': (1, 13, 42, 14, 86, 113), 'DoorEmmyClosed': (2, 13, 42, 13, 86, 112), 'DoorCentralUnit': (1, 14, 45, 25, 81, 102),
+    'DoorThermalOpen': (1, 11, 41, 14, 88, 113), 'DoorThermalClosed': (2, 11, 41, 14, 88, 113), 'DoorThermalTrapOpen': (1, 10, 14, 51, 115, 77),
+    'DoorThermalTrapClosed': (2, 10, 14, 51, 114, 77),
+    'BlockageMissileL': (3, 6, 9, 5, 75, 123), 'BlockageMissileR': (3, 7, 53, 5, 115, 123), 'BlockageSuperMissileL': (3, 0, 23, 6, 75, 121),
+    'BlockageSuperMissileR': (3, 1, 53, 6, 125, 121), 'BlockagePlasmaL': (3, 2, 42, 30, 75, 97), 'BlockagePlasmaR': (3, 3, 53, 30, 74, 97),
+    'BlockageWaveL': (3, 4, 54, 31, 75, 98), 'BlockageWaveR': (3, 5, 54, 31, 75, 98), 'BlockageDisabledL': (5, 0, 25, 24, 104, 105),
+    'BlockageDisabledR': (5, 0, 25, 24, 104, 105),
+    'PropFootstepPlatform': (1, 8), 'PropHyperBeam': (1, 15), 'PropMultiLockon': (1, 12), 'PropEmmyValve': (2, 14), 'PropGrappleBlockL': (3, 8),
+    'PropGrappleBlockR': (3, 9), 'PropGrappleBoxL': (3, 10), 'PropGrappleBoxR': (3, 11), 'PropWideBeamBoxL': (3, 12), 'PropWideBeamBoxR': (3, 13),
+    'PropMorphTunnelEntry': (3, 14), 'PropMorphTunnelExit': (3, 15), 'PropZipline': (6, 0), 'PropSwingPoint': (2, 15), 'PropWarlotus': (2, 12),
+    'PropTurbineActivator': (4, 0),
+    'UsableStationEnergy': (4, 13), 'DisabledStationEnergy': (4, 13), 'UsableStationAmmo': (4, 14), 'DisabledStationAmmo': (4, 14),
+    'UsableStationTotal': (4, 12), 'DisabledStationTotal': (4, 12), 'UsableWaterValve': (4, 0), 'UsableThermalDevice': (4, 0),
+    'UsablePowerGenerator': (4, 0), 'DisabledTeleport': (4, 6), 'UsableTeleportA': (4, 6), 'UsableTeleportE': (4, 7), 'UsableTeleportI': (4, 8),
+    'UsableTeleportO': (4, 9), 'UsableTeleportU': (4, 10), 'UsableTeleportX': (4, 11), 'UsableTeleportY': (5, 6), 'UsableTeleportZ': (4, 11),
+    'UsableTrain': (4, 1), 'UsableElevator': (4, 2), 'DisabledElevator': (4, 2), 'UsableStationSave': (4, 3), 'DisabledStationSave': (4, 3),
+    'UsableStationMap': (4, 4), 'DisabledStationMap': (4, 4), 'UsableAccessPoint': (4, 5), 'DisabledAccessPoint': (4, 5), 'UsableTransport': (2, 8),
+    'Gunship': (2, 7), 'Boss': (5, 2), 'BossDefeated': (5, 2),
+}
+ICON_NAMES = list(ICONS)   # an icon's number in icons.nx2i and the maps; companion_dread.c knows 0 = Samus, 5 = energy tank, 7 = missile tank
+ICON_PX = 64               # each icon's size in icons.nx2i
+
+
+def _bl_offset(x, y, bpp, bh, gobs):   # where texel (x, y) sits in a block-linear (Tegra) image
+    gob = (y // (8 * bh)) * 512 * bh * gobs + (x * bpp // 64) * 512 * bh + ((y % (8 * bh)) // 8) * 512
+    xb = x * bpp
+    return gob + ((xb % 64) // 32) * 256 + ((y % 8) // 2) * 64 + ((xb % 32) // 16) * 32 + (y % 2) * 16 + (xb % 16)
+
+
+def _rgb565(c): return ((c >> 11 & 31) * 255 + 15) // 31, ((c >> 5 & 63) * 255 + 31) // 63, ((c & 31) * 255 + 15) // 31
+
+
+def _bc_colors(b, at, bc1):
+    c0, c1, bits = struct.unpack_from('<HHI', b, at); p0, p1 = _rgb565(c0), _rgb565(c1)
+    if c0 > c1 or not bc1: pal = [p0 + (255,), p1 + (255,), tuple((2 * a + c) // 3 for a, c in zip(p0, p1)) + (255,), tuple((a + 2 * c) // 3 for a, c in zip(p0, p1)) + (255,)]
+    else: pal = [p0 + (255,), p1 + (255,), tuple((a + c) // 2 for a, c in zip(p0, p1)) + (255,), (0, 0, 0, 0)]
+    return [pal[bits >> 2 * i & 3] for i in range(16)]
+
+
+def _bc3_alpha(b, at):
+    a0, a1 = b[at], b[at + 1]; bits = int.from_bytes(b[at + 2:at + 8], 'little')
+    if a0 > a1: pal = [a0, a1] + [((7 - i) * a0 + i * a1) // 7 for i in range(1, 7)]
+    else: pal = [a0, a1] + [((5 - i) * a0 + i * a1) // 5 for i in range(1, 5)] + [0, 255]
+    return [pal[bits >> 3 * i & 7] for i in range(16)]
+
+
+class Texture:
+    """A decoded .bctex ("MTXT" + gzip around an NVN XTX), as Eden's DecodeBctex reads it; pixels decoded on demand, as RGBA tuples."""
+    def __init__(self, data):
+        import zlib
+        if data[:4] != b'MTXT': raise ValueError('not a bctex')
+        gz = data.find(b'\x1f\x8b\x08')
+        if gz < 0: raise ValueError('bctex: no gzip stream')
+        raw = zlib.decompressobj(31).decompress(data[gz:])
+        x = raw.find(b'DFvN')
+        if x < 0: raise ValueError('bctex: no XTX container')
+        at, self.w, self.h, self.fmt, self.bh, pix = x + struct.unpack_from('<I', raw, x + 4)[0], 0, 0, 0, 16, None
+        while at + 36 <= len(raw) and raw[at:at + 4] == b'HBvN':
+            size, off = struct.unpack_from('<QQ', raw, at + 8); kind, = struct.unpack_from('<I', raw, at + 24); d = at + off
+            if d + size > len(raw): break
+            if kind == 2 and size >= 0x70:
+                self.w, self.h = struct.unpack_from('<II', raw, d + 12); self.fmt, = struct.unpack_from('<I', raw, d + 28)
+                self.bh = 1 << struct.unpack_from('<I', raw, d + 40 + 17 * 4)[0]
+            elif kind == 3: pix = raw[d:d + size]
+            at = d + size
+        if not self.w or not pix: raise ValueError('bctex: no texture')
+        if self.fmt not in (0x42, 0x44, 0x25, 0x6D): raise ValueError(f'bctex: format {self.fmt:#x} not decoded')
+        self.pix, self.cache = pix, {}
+
+    def block(self, bx, by):   # a 4x4 block of a BC texture: 16 RGBA tuples
+        k = (bx, by)
+        if k not in self.cache:
+            bc1 = self.fmt == 0x42; n = 8 if bc1 else 16; wide = (self.w + 3) // 4
+            at = _bl_offset(bx, by, n, self.bh, (wide * n + 63) // 64)
+            if at + n > len(self.pix): self.cache[k] = [(0, 0, 0, 0)] * 16
+            elif bc1: self.cache[k] = _bc_colors(self.pix, at, True)
+            else: self.cache[k] = [c[:3] + (a,) for c, a in zip(_bc_colors(self.pix, at + 8, False), _bc3_alpha(self.pix, at))]
+        return self.cache[k]
+
+    def get(self, x, y):
+        if self.fmt in (0x42, 0x44): return self.block(x // 4, y // 4)[(y % 4) * 4 + x % 4]
+        at = _bl_offset(x, y, 4, self.bh, (self.w * 4 + 63) // 64)
+        r, g, b, a = self.pix[at:at + 4] if at + 4 <= len(self.pix) else b'\0\0\0\0'
+        return (b, g, r, a) if self.fmt == 0x6D else (r, g, b, a)
+
+
+def icons_nx2i(tex, cell=128, size=ICON_PX):   # "NX2I", version 1, count, size; per icon its ink rect (4 u16, in its own pixels) and size x size RGBA
+    f = cell // size; out = bytearray(b'NX2I' + struct.pack('<III', 1, len(ICONS), size))
+    for name in ICON_NAMES:
+        r, c, *ink = ICONS[name]; ink = ink or [0, 0, cell, cell]
+        out += struct.pack('<4H', *(v // f for v in ink))
+        for y in range(size):
+            for x in range(size):
+                s = [0, 0, 0, 0]
+                for j in range(f):
+                    for i in range(f):
+                        p = tex.get(c * cell + x * f + i, r * cell + y * f + j); a = p[3]
+                        s[0] += p[0] * a; s[1] += p[1] * a; s[2] += p[2] * a; s[3] += a
+                a = s[3]; out += bytes((s[0] // a, s[1] // a, s[2] // a, a // (f * f)) if a else (0, 0, 0, 0))
+    return bytes(out)
+
+
+def find_asset(romfs, path):   # a RomFS file, loose or in one of the packs
+    loose = Path(romfs) / path
+    if loose.is_file(): return loose.read_bytes()
+    want = crc64(path)
+    for pkg in sorted((Path(romfs) / 'packs').rglob('*.pkg')):
+        with open(pkg, 'rb') as f:
+            head = f.read(12)
+            if len(head) < 12: continue
+            n, = struct.unpack_from('<I', head, 8)
+            for a, s, e in struct.iter_unpack('<QII', f.read(16 * n)):
+                if a == want: f.seek(s); return f.read(e - s)
+    return None
+
+
+LAYERS = ('mapWaterPoolGeos', 'mapHeatRoomGeos', 'mapFreezeRoomGeos', 'mapEmmyRoomGeos')   # companion_dread.c draws them in this order
+F_BOX, F_FLIPX, F_FLIPY, F_DOOR, F_ITEM = 1, 2, 4, 8, 16
+_BIG = 1e30
+
+
+def _tris(geos):
     tris = []
-    for g in root.get('aNavmeshGeos', []):
+    for g in geos:
         v, ix = g.get('aVertex', []), g.get('aIndex', [])
-        for i in range(0, len(ix) - 2, 3): tris.append((v[ix[i]][:2], v[ix[i + 1]][:2], v[ix[i + 2]][:2]))
+        for i in range(0, len(ix) - 2, 3):
+            if max(ix[i:i + 3]) < len(v): tris.append((v[ix[i]][:2], v[ix[i + 1]][:2], v[ix[i + 2]][:2]))
+    return tris
+
+
+def _box(b):
+    if not b or 'Min' not in b or 'Max' not in b: return None
+    v = (*b['Min'], *b['Max'])
+    return None if any(abs(c) > _BIG or c != c for c in v) or v[2] <= v[0] or v[3] <= v[1] else v
+
+
+def map_icons(root, unknown=None):   # (icon, flags, x, y, box x0, y0, x1, y1): doors as two halves of their boxes, as eden-duo's dread_mapgen
+    out = []
+    def known(n):
+        if n in ICONS: return True
+        if n and unknown is not None: unknown[n] = unknown.get(n, 0) + 1
+        return False
+    for d in root.get('mapDoors', {}).values():
+        if 'vPos' not in d: continue
+        bs = [b for b in (_box(d.get('oBoxL')), _box(d.get('oBoxR'))) if b]
+        x, y = d['vPos']
+        u = (min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs)) if bs else (x - 150, y - 150, x + 150, y + 150)
+        cx, cy = (u[0] + u[2]) / 2, (u[1] + u[3]) / 2
+        l, r = d.get('sLeftIconId', ''), d.get('sRightIconId', ''); both = known(l) & known(r)
+        for n, half in ((l, (u[0], u[1], cx, u[3])), (r, (cx, u[1], u[2], u[3]))):
+            if n in ICONS: out.append((ICON_NAMES.index(n), F_BOX | F_DOOR, cx, cy, *(half if both else u)))
+    for cat, fl in (('mapBlockages', F_BOX), ('mapItems', F_ITEM), ('mapUsables', 0), ('mapCentralUnits', 0), ('mapBosses', 0), ('mapProps', 0)):
+        for e in root.get(cat, {}).values():
+            n = e.get('sIconId', '')
+            if 'vPos' not in e or not known(n): continue
+            x, y = e['vPos']; b = _box(e.get('oBox')) if fl & F_BOX else None
+            f = (fl if b else fl & ~F_BOX) | (F_FLIPX if e.get('bFlipX') else 0) | (F_FLIPY if e.get('bFlipY') else 0)
+            out.append((ICON_NAMES.index(n), f, x, y, *(b or (x, y, x, y))))
+    return out
+
+
+def nx2m(root, unknown=None):
+    """companion_dread.c's map: "NX2M", version 2, bounds (4 f32), the navigation mesh's triangles (u32 count, x y x 3 each), the 4 LAYERS' triangles,
+    the icons (u32 count; u16 icon, u16 flags, f32 x, y, box x0 y0 x1 y1 each)"""
+    tris = _tris(root.get('aNavmeshGeos', []))
     if not tris: raise ValueError('no navigation mesh')
     xs = [p[0] for t in tris for p in t]; ys = [p[1] for t in tris for p in t]
-    doors = [d['vPos'] for d in root.get('mapDoors', {}).values() if 'vPos' in d]
-    items = [d['vPos'] for d in root.get('mapItems', {}).values() if 'vPos' in d]
-    out = bytearray(b'NX2M' + struct.pack('<I4f', 1, min(xs), min(ys), max(xs), max(ys)))
-    out += struct.pack('<I', len(tris)) + b''.join(struct.pack('<6f', *t[0], *t[1], *t[2]) for t in tris)
-    for pts in (doors, items): out += struct.pack('<I', len(pts)) + b''.join(struct.pack('<2f', *p) for p in pts)
-    return bytes(out), len(tris), len(doors), len(items)
+    out = bytearray(b'NX2M' + struct.pack('<I4f', 2, min(xs), min(ys), max(xs), max(ys)))
+    def put(ts): out.extend(struct.pack('<I', len(ts)) + b''.join(struct.pack('<6f', *t[0], *t[1], *t[2]) for t in ts))
+    put(tris)
+    for k in LAYERS: put(_tris(root.get(k, {}).values()))
+    icons = map_icons(root, unknown)
+    out += struct.pack('<I', len(icons)) + b''.join(struct.pack('<2H6f', *i) for i in icons)
+    return bytes(out), len(tris), sum(1 for i in icons if i[1] & F_DOOR), len(icons)
 
 
 def find_romfs(folder):
@@ -197,8 +374,14 @@ def make(folder, out=None, log=print):
     for area in AREAS:
         a = crc64(f'maps/levels/c10_samus/{area}/{area}.bmmap')
         if a not in by_id: log(f'  {area}: no minimap data in system.pkg'); continue
-        data, nt, nd, ni = nx2m(bmmap_read(by_id[a]))
-        (out / 'companion' / f'{area}.nx2m').write_bytes(data); log(f'  {area}: {nt} triangles, {nd} doors, {ni} items')
+        unknown = {}; data, nt, nd, ni = nx2m(bmmap_read(by_id[a]), unknown)
+        (out / 'companion' / f'{area}.nx2m').write_bytes(data); log(f'  {area}: {nt} triangles, {nd} door halves, {ni} icons')
+        if unknown: log(f'    icons not drawn: {", ".join(f"{k} x{v}" for k, v in sorted(unknown.items()))}')
+    atlas = find_asset(romfs, ICON_ATLAS)
+    if atlas is None: log(f'  no {ICON_ATLAS}: the page draws plain shapes for the icons')
+    else:
+        try: (out / 'companion' / 'icons.nx2i').write_bytes(icons_nx2i(Texture(atlas))); log(f'  {len(ICONS)} map icons from {ICON_ATLAS}')
+        except ValueError as e: log(f'  {ICON_ATLAS}: {e}: the page draws plain shapes for the icons')
     sc, orig = crc64(SCENARIO), crc64(ORIGINAL)
     if orig in by_id: raise SystemExit(f'{pkg_path} is already wrapped: give the original RomFS')
     if sc not in by_id: raise SystemExit(f'{SCENARIO} is not in {pkg_path}')

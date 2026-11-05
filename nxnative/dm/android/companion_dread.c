@@ -6,8 +6,9 @@
 // heap) for the two magic numbers, then reads in place. An old copy of the table can stay in memory after an area loads a new one: of the copies found,
 // the one whose seq moves is used. Without a live copy the scan is repeated, less often each time (the title menu has none).
 // The maps: dread_companion.py turns each area's minimap data (maps/levels/c10_samus/<area>/<area>.bmmap: the navigation mesh, doors, items) into
-// companion/<area>.nx2m in the data folder. Drawn into a cached picture for the view (the whole area, or zoomed in by touch); each pass copies it where
-// Samus has been (the rest is fog) and draws Samus.
+// companion/<area>.nx2m in the data folder, and the game's map icons (textures/system/minimap/icons/icons.bctex) into companion/icons.nx2i.
+// Drawn as eden-duo-companions' Dread map looks: a cached picture of the rooms for the view (the whole area, or zoomed in by touch), coloured each pass
+// by what is explored (the rest is fog), the game's icons over it, and Samus.
 #include "dm.h"
 #include "companion.h"
 #include <math.h>
@@ -106,23 +107,70 @@ void dm_dread_tick(void) {
 }
 
 // ---- the maps ----
-typedef struct { float minx, miny, maxx, maxy; uint32_t ntri, ndoor, nitem; float *tri, *door, *item; } nx2m;   // tri: x0 y0 x1 y1 x2 y2 each; door, item: x y each
+// companion/<area>.nx2m (porter/dread_companion.py): "NX2M", version 2, bounds; the navigation mesh's triangles; the water, heat, freeze and EMMI rooms'
+// triangles; the icons (doors as two halves of their box, blockages over their box, items, stations... at a point), as numbers in companion/icons.nx2i
+enum { L_WATER, L_HEAT, L_FREEZE, L_EMMY, NLAYER };
+enum { F_BOX = 1, F_FLIPX = 2, F_FLIPY = 4, F_DOOR = 8, F_ITEM = 16 };
+typedef struct { uint16_t icon, flags; float x, y, b[4]; } micon;
+typedef struct { float minx, miny, maxx, maxy; uint32_t ntri, nicon, nl[NLAYER]; float *tri, *lt[NLAYER]; micon *ic; } nx2m;   // tri: x0 y0 x1 y1 x2 y2 each
 static nx2m g_map; static int g_map_area = -1;   // -1 = none tried; the area whose map is loaded (or failed: ntri = 0)
 static int read_f(FILE *f, float **out, uint32_t *n, int per) {
     if (fread(n, 4, 1, f) != 1 || *n > 4000000) return 0;
     *out = malloc((size_t)*n * per * 4 + 4); return *out && fread(*out, 4, (size_t)*n * per, f) == (size_t)*n * per;
 }
 static void map_load(int area) {
-    free(g_map.tri); free(g_map.door); free(g_map.item); memset(&g_map, 0, sizeof g_map); g_map_area = area;
+    free(g_map.tri); free(g_map.ic); for (int i = 0; i < NLAYER; i++) free(g_map.lt[i]);
+    memset(&g_map, 0, sizeof g_map); g_map_area = area;
     const char *root = getenv("DM_ROOT"); char path[700]; char hdr[8];
     snprintf(path, sizeof path, "%s/companion/%s.nx2m", root ? root : ".", AREA_ID[area]);
     FILE *f = fopen(path, "rb");
     if (!f) { LOG("[RED] [companion] Dread: no map %s (run porter dread-companion)", path); return; }
-    int ok = fread(hdr, 1, 8, f) == 8 && !memcmp(hdr, "NX2M\1\0\0\0", 8) && fread(&g_map.minx, 4, 4, f) == 4
-          && read_f(f, &g_map.tri, &g_map.ntri, 6) && read_f(f, &g_map.door, &g_map.ndoor, 2) && read_f(f, &g_map.item, &g_map.nitem, 2);
+    int ok = fread(hdr, 1, 8, f) == 8 && !memcmp(hdr, "NX2M\2\0\0\0", 8) && fread(&g_map.minx, 4, 4, f) == 4 && read_f(f, &g_map.tri, &g_map.ntri, 6);
+    for (int i = 0; ok && i < NLAYER; i++) ok = read_f(f, &g_map.lt[i], &g_map.nl[i], 6);
+    ok = ok && fread(&g_map.nicon, 4, 1, f) == 1 && g_map.nicon < 100000 && (g_map.ic = malloc(sizeof *g_map.ic * g_map.nicon + 1)) && fread(g_map.ic, sizeof *g_map.ic, g_map.nicon, f) == g_map.nicon;
     fclose(f);
-    if (!ok || g_map.maxx <= g_map.minx || g_map.maxy <= g_map.miny) { LOG("[RED] [companion] Dread: bad map %s", path); g_map.ntri = 0; return; }
-    LOG("[companion] Dread: map %s: %u triangles, %u doors, %u items, x %.0f..%.0f y %.0f..%.0f", AREA_ID[area], g_map.ntri, g_map.ndoor, g_map.nitem, g_map.minx, g_map.maxx, g_map.miny, g_map.maxy);
+    if (!ok || g_map.maxx <= g_map.minx || g_map.maxy <= g_map.miny) { LOG("[RED] [companion] Dread: bad map %s (an older one? run porter dread-companion again)", path); g_map.ntri = 0; return; }
+    LOG("[companion] Dread: map %s: %u triangles, %u icons, x %.0f..%.0f y %.0f..%.0f", AREA_ID[area], g_map.ntri, g_map.nicon, g_map.minx, g_map.maxx, g_map.miny, g_map.maxy);
+}
+
+// the game's map icons: companion/icons.nx2i ("NX2I", version 1, count, size; each its ink rect, 4 u16, and size x size RGBA)
+enum { I_SAMUS = 0, I_ETANK = 5, I_MTANK = 7 };
+static struct { int n, sz, tried; uint16_t *ink; uint32_t *px; } g_ico;
+static void icons_load(void) {
+    g_ico.tried = 1; const char *root = getenv("DM_ROOT"); char path[700]; uint32_t h[4];
+    snprintf(path, sizeof path, "%s/companion/icons.nx2i", root ? root : ".");
+    FILE *f = fopen(path, "rb"); if (!f) { LOG("[companion] Dread: no %s: plain shapes for the icons", path); return; }
+    if (fread(h, 4, 4, f) == 4 && h[0] == 0x4932584e /* NX2I */ && h[1] == 1 && h[2] && h[2] < 1000 && h[3] && h[3] <= 256) {
+        size_t per = (size_t)h[3] * h[3]; g_ico.ink = malloc(8 * h[2]); g_ico.px = malloc(4 * per * h[2]);
+        int ok = g_ico.ink && g_ico.px;
+        for (uint32_t i = 0; ok && i < h[2]; i++) ok = fread(g_ico.ink + 4 * i, 2, 4, f) == 4 && fread(g_ico.px + per * i, 4, per, f) == per;
+        if (ok) { g_ico.n = (int)h[2]; g_ico.sz = (int)h[3]; LOG("[companion] Dread: %d map icons", g_ico.n); }
+        else { free(g_ico.ink); free(g_ico.px); g_ico.ink = NULL; g_ico.px = NULL; }
+    }
+    if (!g_ico.n) LOG("[RED] [companion] Dread: bad %s", path);
+    fclose(f);
+}
+// icon i (its ink rect for a box, the whole cell otherwise) over the page in [x0, x1) x [y0, y1), rows from top on; alpha * a / 256
+static void icon_blit(page *p, int i, int box, int flags, float x0, float y0, float x1, float y1, int top, int a) {
+    if (i < 0 || i >= g_ico.n || x1 - x0 < 1 || y1 - y0 < 1) return;
+    const uint16_t *k = g_ico.ink + 4 * i; int S = g_ico.sz;
+    float u0 = box ? k[0] : 0, v0 = box ? k[1] : 0, uw = box ? k[2] - k[0] : S, vh = box ? k[3] - k[1] : S; if (uw < 1) uw = 1; if (vh < 1) vh = 1;
+    const uint32_t *src = g_ico.px + (size_t)S * S * i;
+    int ix0 = (int)floorf(x0), iy0 = (int)floorf(y0), ix1 = (int)ceilf(x1), iy1 = (int)ceilf(y1);
+    if (ix0 < 0) ix0 = 0; if (iy0 < top) iy0 = top; if (ix1 > p->w) ix1 = p->w; if (iy1 > p->h) iy1 = p->h;
+    for (int y = iy0; y < iy1; y++) {
+        float fv = (y + 0.5f - y0) / (y1 - y0); if (fv < 0 || fv >= 1) continue; if (flags & F_FLIPY) fv = 1 - fv;
+        int v = (int)(v0 + fv * vh); if (v >= S) v = S - 1;
+        uint32_t *d = p->px + (size_t)y * p->stride;
+        for (int x = ix0; x < ix1; x++) {
+            float fu = (x + 0.5f - x0) / (x1 - x0); if (fu < 0 || fu >= 1) continue; if (flags & F_FLIPX) fu = 1 - fu;
+            int u = (int)(u0 + fu * uw); if (u >= S) u = S - 1;
+            uint32_t c = src[(size_t)v * S + u]; unsigned al = (c >> 24) * (unsigned)a >> 8; if (!al) continue;
+            uint32_t o = d[x], r = 0xff000000u;
+            for (int sh = 0; sh < 24; sh += 8) r |= ((((c >> sh) & 255) * al + ((o >> sh) & 255) * (255 - al)) / 255) << sh;
+            d[x] = r;
+        }
+    }
 }
 
 // ---- what Samus has seen: a grid over the area, revealed around her as she goes ----
@@ -194,40 +242,64 @@ void dm_dread_touch(int act, int idx, int n, const float *x, const float *y) {
     pthread_mutex_unlock(&g_vmu);
 }
 
-// the picture of the map for the view, cached while the view stays
-static uint32_t *g_pic; static int g_pic_w, g_pic_h, g_pic_area = -1, g_top;
+// the picture of the map for the view, cached while the view stays: a class per pixel (the look of eden-duo-companions' Dread map: the game's
+// rooms dark blue with grey edges, walked ones lighter, the water, heat, cold and EMMI rooms tinted), coloured each pass by what is explored
+enum { K_NONE, K_ROOM, K_EDGE, K_WATER, K_HEAT, K_FREEZE, K_EMMY, NK };
+static uint8_t *g_pic; static int g_pic_w, g_pic_h, g_pic_area = -1, g_top;
 static float g_k, g_cx, g_cy, g_pk, g_pcx, g_pcy;   // screen = (g_scx + (x - g_cx) * g_k, g_scy - (y - g_cy) * g_k); g_p*: the picture's
 static int *g_colc, *g_rowc; static int g_colc_n, g_rowc_n;   // each screen column's and row's grid cell, for the fog
-#define C_BG    0xff201008u
-#define C_ROOM  0xffa05a1eu
-#define C_DOOR  0xfff0e0a0u
-#define C_ITEM  0xff40c8ffu
-#define C_BAR   0xff5a2a1au
+#define RGB(r, g, b) (0xff000000u | (uint32_t)(b) << 16 | (uint32_t)(g) << 8 | (uint32_t)(r))
+#define C_BG    RGB(0x0b, 0x0f, 0x14)
+#define C_LINE  RGB(0x8e, 0x8e, 0x8e)
+#define C_DOOR  RGB(0xe8, 0xe0, 0x30)
+#define C_ITEM  RGB(0xff, 0xc8, 0x40)
+static uint32_t mix(uint32_t a, uint32_t b, float t) {
+    uint32_t r = 0xff000000u;
+    for (int sh = 0; sh < 24; sh += 8) r |= (uint32_t)lrintf(((a >> sh) & 255) * (1 - t) + ((b >> sh) & 255) * t) << sh;
+    return r;
+}
+static uint32_t g_pal[2][NK];   // [walked][class]: walked, or only seen (as the game's map shows a room a map station revealed)
+static void pal_init(void) {
+    static const uint32_t layer[] = {RGB(0x0a, 0x5f, 0x65), RGB(0xa6, 0x0c, 0x09), RGB(0x0a, 0x12, 0x9f), RGB(0x8e, 0x14, 0x14)};
+    uint32_t room = mix(C_BG, RGB(0x00, 0x13, 0x30), 0.7f), walked = mix(room, RGB(0x16, 0x4c, 0x3c), 112 / 255.0f);
+    g_pal[0][K_NONE] = g_pal[1][K_NONE] = C_BG;
+    g_pal[0][K_ROOM] = room; g_pal[1][K_ROOM] = walked;
+    g_pal[0][K_EDGE] = mix(C_BG, C_LINE, 0.55f); g_pal[1][K_EDGE] = C_LINE;
+    for (int i = 0; i < NLAYER; i++) { g_pal[0][K_WATER + i] = mix(room, layer[i], 0.35f); g_pal[1][K_WATER + i] = mix(walked, layer[i], 0.55f); }
+}
 static void sxy(float x, float y, float *sx, float *sy) { *sx = g_scx + (x - g_cx) * g_k; *sy = g_scy - (y - g_cy) * g_k; }
-static void tri_fill(uint32_t *px, int w, int h, int y0c, float x0, float y0, float x1, float y1, float x2, float y2, uint32_t c) {
+static void tri_fill(uint8_t *px, int w, int h, int y0c, float x0, float y0, float x1, float y1, float x2, float y2, uint8_t c, int only_room) {
     float area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0); if (area == 0) return;
     if (area < 0) { float tx = x1, ty = y1; x1 = x2; y1 = y2; x2 = tx; y2 = ty; }
     int bx0 = (int)floorf(fminf(x0, fminf(x1, x2))), bx1 = (int)ceilf(fmaxf(x0, fmaxf(x1, x2))), by0 = (int)floorf(fminf(y0, fminf(y1, y2))), by1 = (int)ceilf(fmaxf(y0, fmaxf(y1, y2)));
     if (bx0 < 0) bx0 = 0; if (by0 < y0c) by0 = y0c; if (bx1 > w) bx1 = w; if (by1 > h) by1 = h;
     for (int y = by0; y < by1; y++) for (int x = bx0; x < bx1; x++) {
         float px_ = x + 0.5f, py = y + 0.5f;
-        if ((x1 - x0) * (py - y0) - (y1 - y0) * (px_ - x0) >= 0 && (x2 - x1) * (py - y1) - (y2 - y1) * (px_ - x1) >= 0 && (x0 - x2) * (py - y2) - (y0 - y2) * (px_ - x2) >= 0) px[(size_t)y * w + x] = c;
+        if ((x1 - x0) * (py - y0) - (y1 - y0) * (px_ - x0) >= 0 && (x2 - x1) * (py - y1) - (y2 - y1) * (px_ - x1) >= 0 && (x0 - x2) * (py - y2) - (y0 - y2) * (px_ - x2) >= 0) {
+            uint8_t *d = px + (size_t)y * w + x; if (!only_room || *d) *d = c;
+        }
+    }
+}
+static void tris_fill(const float *t, uint32_t n, int w, int h, int top, uint8_t c, int only_room) {
+    for (uint32_t i = 0; i < n; i++, t += 6) {
+        float a[6]; sxy(t[0], t[1], &a[0], &a[1]); sxy(t[2], t[3], &a[2], &a[3]); sxy(t[4], t[5], &a[4], &a[5]);
+        if (fmaxf(a[0], fmaxf(a[2], a[4])) < 0 || fminf(a[0], fminf(a[2], a[4])) > w || fmaxf(a[1], fmaxf(a[3], a[5])) < top || fminf(a[1], fminf(a[3], a[5])) > h) continue;
+        tri_fill(g_pic, w, h, top, a[0], a[1], a[2], a[3], a[4], a[5], c, only_room);
     }
 }
 static void pic_make(int w, int h, int top, int area) {
-    if (g_pic_w != w || g_pic_h != h || !g_pic) { free(g_pic); g_pic = malloc((size_t)w * h * 4); }
+    if (g_pic_w != w || g_pic_h != h || !g_pic) { free(g_pic); g_pic = malloc((size_t)w * h); }
     g_pic_w = w; g_pic_h = h; g_pic_area = area; g_top = top; g_pk = g_k; g_pcx = g_cx; g_pcy = g_cy;
     if (!g_pic) return;
-    for (size_t i = 0; i < (size_t)w * h; i++) g_pic[i] = C_BG;
-    for (uint32_t i = 0; i < g_map.ntri; i++) {
-        const float *t = g_map.tri + 6 * i; float a[6];
-        sxy(t[0], t[1], &a[0], &a[1]); sxy(t[2], t[3], &a[2], &a[3]); sxy(t[4], t[5], &a[4], &a[5]);
-        if (fmaxf(a[0], fmaxf(a[2], a[4])) < 0 || fminf(a[0], fminf(a[2], a[4])) > w || fmaxf(a[1], fmaxf(a[3], a[5])) < top || fminf(a[1], fminf(a[3], a[5])) > h) continue;
-        tri_fill(g_pic, w, h, top, a[0], a[1], a[2], a[3], a[4], a[5], C_ROOM);
+    memset(g_pic, K_NONE, (size_t)w * h);
+    tris_fill(g_map.tri, g_map.ntri, w, h, top, K_ROOM, 0);
+    static const uint8_t order[] = {L_EMMY, L_WATER, L_HEAT, L_FREEZE};   // the later on top
+    for (int i = 0; i < NLAYER; i++) tris_fill(g_map.lt[order[i]], g_map.nl[order[i]], w, h, top, (uint8_t)(K_WATER + order[i]), 1);
+    for (int y = top; y < h; y++) for (int x = 0; x < w; x++) {   // the rooms' edges: a room pixel beside an empty one
+        uint8_t *c = g_pic + (size_t)y * w + x; if (*c == K_NONE || *c == K_EDGE) continue;
+        if (x == 0 || y == top || x == w - 1 || y == h - 1) continue;
+        if (!c[-1] || !c[1] || !c[-w] || !c[w]) *c = K_EDGE;
     }
-    page p = {g_pic, w, h, w}; int d = (int)fmaxf(2, h / 270.0f * fminf(sqrtf(g_k / g_k0), 3));
-    for (uint32_t i = 0; i < g_map.ndoor; i++) { float x, y; sxy(g_map.door[2 * i], g_map.door[2 * i + 1], &x, &y); if (y - 2 * d >= top) fill(&p, (int)x - d / 2, (int)y - 2 * d, (int)x + d - d / 2, (int)y + 2 * d, C_DOOR); }
-    for (uint32_t i = 0; i < g_map.nitem; i++) { float x, y; sxy(g_map.item[2 * i], g_map.item[2 * i + 1], &x, &y); if (y - d >= top) fill(&p, (int)x - d, (int)y - d, (int)x + d, (int)y + d, C_ITEM); }
 }
 static void disc(page *p, float cx, float cy, float r, uint32_t c) {
     for (int y = (int)(cy - r); y <= (int)(cy + r); y++) for (int x = (int)(cx - r); x <= (int)(cx + r); x++)
@@ -343,16 +415,61 @@ static int grid_state(float wx, float wy) {   // the game's state of the cell at
     if (c < 0 || r < 0 || c >= GCOLS || r >= GROWS) return -1;
     return g_cells[(size_t)r * GROWB + (size_t)c * GSTRIDE + 8];
 }
-static uint32_t dim(uint32_t c) { return 0xff000000u | ((c >> 1) & 0x7f7f7fu); }
+static int seen_at(float wx, float wy) {   // the page's own fog: Samus has been near
+    int c = (int)((wx - g_map.minx) / CELL), r = (int)((wy - g_map.miny) / CELL);
+    if (!g_seen.bit || c < 0 || r < 0 || c >= g_seen.gw || r >= g_seen.gh) return 0;
+    size_t k = (size_t)r * g_seen.gw + c; return g_seen.bit[k >> 3] >> (k & 7) & 1;
+}
+
+// the header: the area's name over a line, energy and missiles under it with the game's tank icons
+static int head_h(int s) { int s2 = s * 4 / 7 < 2 ? 2 : s * 4 / 7, m = 3 * s; return m + 7 * s + m + 7 * s2 + 4 + m; }
+static void head_draw(page *p, int s, int area) {
+    int s2 = s * 4 / 7 < 2 ? 2 : s * 4 / 7, m = 3 * s, h = head_h(s), cx = p->w / 2;
+    fill(p, 0, 0, p->w, h, C_BG);
+    char up[32]; const char *n = AREA_NAME[area]; size_t i = 0; for (; n[i] && i < sizeof up - 1; i++) up[i] = (char)(n[i] >= 'a' && n[i] <= 'z' ? n[i] - 32 : n[i]); up[i] = 0;
+    int tw = (int)strlen(up) * 6 * s - s; text(p, cx - tw / 2, m, s, 0xffffffff, up);
+    int ly = m + 7 * s + m / 2, half = tw / 2 + 6 * s, t = s / 3 < 1 ? 1 : s / 3;   // the line, its ends bent up
+    fill(p, cx - half, ly, cx + half, ly + t, C_LINE);
+    fill(p, cx - half - 4 * s, ly - 2 * s, cx - half, ly - 2 * s + t, C_LINE); fill(p, cx - half - t, ly - 2 * s, cx - half, ly + t, C_LINE);
+    fill(p, cx + half, ly - 2 * s, cx + half + 4 * s, ly - 2 * s + t, C_LINE); fill(p, cx + half, ly - 2 * s, cx + half + t, ly + t, C_LINE);
+    char e[24], mi[24]; snprintf(e, sizeof e, "%d/%d", g_st.life, g_st.lifemax); snprintf(mi, sizeof mi, "%d/%d", g_st.mis, g_st.mismax);
+    int ic = 7 * s2 + 6 * s2, gap = 4 * s, ew = ic + s2 + (int)strlen(e) * 6 * s2, mw = ic + s2 + (int)strlen(mi) * 6 * s2;
+    int x = cx - (ew + 3 * gap + mw) / 2, y = ly + m / 2 + 4, iy = y + 7 * s2 / 2;
+    if (g_ico.n > I_MTANK) icon_blit(p, I_ETANK, 0, 0, x, iy - ic / 2, x + ic, iy + ic / 2, 0, 256); else fill(p, x + ic / 4, y, x + ic * 3 / 4, y + 7 * s2, RGB(0xd2, 0x3c, 0xbe));
+    text(p, x + ic + s2, y, s2, RGB(0xe0, 0xe0, 0xe0), e); x += ew + 3 * gap;
+    if (g_ico.n > I_MTANK) icon_blit(p, I_MTANK, 0, 0, x, iy - ic / 2, x + ic, iy + ic / 2, 0, 256); else fill(p, x + ic / 4, y, x + ic * 3 / 4, y + 7 * s2, RGB(0xe0, 0x30, 0x30));
+    text(p, x + ic + s2, y, s2, RGB(0xe0, 0xe0, 0xe0), mi);
+    fill(p, 0, h - 1, p->w, h, mix(C_BG, C_LINE, 0.35f));
+}
+
+// the icons where the map is explored: doors and blockages over their box, the rest a square that grows a little with the zoom
+static void icons_draw(page *p, int top, int game) {
+    float base = fminf(fmaxf(160 * g_k, p->h / 45.0f), p->h / 12.0f), mn = fmaxf(3, p->h / 160.0f);
+    for (uint32_t i = 0; i < g_map.nicon; i++) {
+        const micon *c = &g_map.ic[i];
+        if (game ? grid_state(c->x, c->y) <= 1 : !seen_at(c->x, c->y)) continue;
+        float x0, y0, x1, y1;
+        if (c->flags & F_BOX) {
+            sxy(c->b[0], c->b[3], &x0, &y0); sxy(c->b[2], c->b[1], &x1, &y1);
+            if (x1 - x0 < mn) { float m = (x0 + x1) / 2; x0 = m - mn / 2; x1 = m + mn / 2; }
+            if (y1 - y0 < mn) { float m = (y0 + y1) / 2; y0 = m - mn / 2; y1 = m + mn / 2; }
+        } else { float cx, cy; sxy(c->x, c->y, &cx, &cy); x0 = cx - base / 2; y0 = cy - base / 2; x1 = x0 + base; y1 = y0 + base; }
+        if (x1 < 0 || x0 > p->w || y1 < top || y0 > p->h) continue;
+        if (g_ico.n) icon_blit(p, c->icon, c->flags & F_BOX, c->flags, x0, y0, x1, y1, top, 256);
+        else if (c->flags & (F_DOOR | F_ITEM)) { int b = (int)fmaxf(2, (x1 - x0) / 4); page q = *p; fill(&q, (int)x0 + b, (int)fmaxf(y0 + b, top), (int)x1 - b, (int)y1 - b, c->flags & F_DOOR ? C_DOOR : C_ITEM); }
+    }
+}
 
 int dm_dread_draw(page *p) {
     if (!dm_dread_active()) return 0;
+    static int pal; if (!pal) { pal_init(); pal = 1; }
+    if (!g_ico.tried) icons_load();
     int s = p->w / (6 * 28 + 6); if (s > p->h / (11 * 16)) s = p->h / (11 * 16); if (s < 2) s = 2;   // as companion_android.c's page
-    int m = 3 * s, top = 2 * m + 7 * s;
+    int m = 3 * s, top = head_h(s);
     int area = g_tab && g_st.area > 0 && g_st.area < NAREA ? g_st.area : 0;
     if (!area) {
-        fill(p, 0, 0, p->w, p->h, C_BG); fill(p, 0, 0, p->w, top, C_BAR); text(p, m, m, s, 0xffffffff, "METROID DREAD");
-        text(p, m, top + 2 * m, s, 0xffb0b0b0, g_ncand ? "Buscando a Samus..." : "El mapa sale al entrar en una zona");
+        fill(p, 0, 0, p->w, p->h, C_BG); text(p, m, m, s, 0xffffffff, "METROID DREAD"); fill(p, 0, 2 * m + 7 * s - 1, p->w, 2 * m + 7 * s, mix(C_BG, C_LINE, 0.35f));
+        text(p, m, 2 * m + 7 * s + 2 * m, s, 0xffb0b0b0, g_ncand ? "Buscando a Samus..." : "El mapa sale al entrar en una zona");
         return 1;
     }
     if (area != g_map_area) { map_load(area); if (g_map.ntri) seen_load(area); }
@@ -361,39 +478,35 @@ int dm_dread_draw(page *p) {
         view_set(p->w, p->h, top);
         if (g_pic_area != area || g_pic_w != p->w || g_pic_h != p->h || g_top != top || g_pk != g_k || g_pcx != g_cx || g_pcy != g_cy) pic_make(p->w, p->h, top, area);
     }
-    int game = g_map.ntri && g_pic && g_cells && g_garea == area;   // the game's own explored map
-    if (game) {   // walked cells bright, seen ones dim, the rest not drawn
+    int game = g_map.ntri && g_pic && g_cells && g_garea == area;   // the game's own explored map; else the page's own fog
+    if (g_map.ntri && g_pic && (game || g_seen.bit)) {
         if (g_colc_n != p->w) { free(g_colc); g_colc = malloc(sizeof *g_colc * p->w); g_colc_n = g_colc ? p->w : 0; }
         if (g_rowc_n != p->h) { free(g_rowc); g_rowc = malloc(sizeof *g_rowc * p->h); g_rowc_n = g_rowc ? p->h : 0; }
         if (g_colc && g_rowc) {
-            for (int x = 0; x < p->w; x++) { int c = (int)floorf((g_cx + (x + 0.5f - g_scx) / g_k - g_gx0) / 100); g_colc[x] = c >= 0 && c < GCOLS ? c : -1; }
-            for (int y = 0; y < p->h; y++) { int r = (int)floorf((g_cy - (y + 0.5f - g_scy) / g_k - g_gy0) / g_gdy); g_rowc[y] = y >= top && r >= 0 && r < GROWS ? r : -1; }
+            float ox = game ? g_gx0 : g_map.minx, oy = game ? g_gy0 : g_map.miny, dy = game ? g_gdy : CELL; int nc = game ? GCOLS : g_seen.gw, nr = game ? GROWS : g_seen.gh;
+            for (int x = 0; x < p->w; x++) { int c = (int)floorf((g_cx + (x + 0.5f - g_scx) / g_k - ox) / 100); g_colc[x] = c >= 0 && c < nc ? c : -1; }
+            for (int y = 0; y < p->h; y++) { int r = (int)floorf((g_cy - (y + 0.5f - g_scy) / g_k - oy) / dy); g_rowc[y] = y >= top && r >= 0 && r < nr ? r : -1; }
             for (int y = top; y < p->h; y++) {
-                uint32_t *d = p->px + (size_t)y * p->stride; const uint32_t *src = g_pic + (size_t)y * p->w; int r = g_rowc[y];
+                uint32_t *d = p->px + (size_t)y * p->stride; const uint8_t *src = g_pic + (size_t)y * p->w; int r = g_rowc[y];
                 if (r < 0) { for (int x = 0; x < p->w; x++) d[x] = C_BG; continue; }
-                const uint8_t *row = g_cells + (size_t)r * GROWB + 8;
-                for (int x = 0; x < p->w; x++) { int c = g_colc[x]; uint8_t st = c >= 0 ? row[(size_t)c * GSTRIDE] : 0; d[x] = st >= 6 || src[x] == C_BG ? (st > 1 ? src[x] : C_BG) : st > 1 ? dim(src[x]) : C_BG; }
+                if (game) {   // walked cells as walked, seen ones as seen, the rest not drawn
+                    const uint8_t *row = g_cells + (size_t)r * GROWB + 8;
+                    for (int x = 0; x < p->w; x++) { int c = g_colc[x]; uint8_t st = c >= 0 ? row[(size_t)c * GSTRIDE] : 0; d[x] = st > 1 ? g_pal[st >= 6][src[x]] : C_BG; }
+                } else {
+                    size_t base = (size_t)r * g_seen.gw;
+                    for (int x = 0; x < p->w; x++) { int c = g_colc[x]; size_t k = base + (size_t)c; d[x] = c >= 0 && (g_seen.bit[k >> 3] >> (k & 7) & 1) ? g_pal[1][src[x]] : C_BG; }
+                }
             }
         }
-    } else if (g_map.ntri && g_pic && g_seen.bit) {   // the picture where Samus has been, the fog elsewhere
-        if (g_colc_n != p->w) { free(g_colc); g_colc = malloc(sizeof *g_colc * p->w); g_colc_n = g_colc ? p->w : 0; }
-        if (g_rowc_n != p->h) { free(g_rowc); g_rowc = malloc(sizeof *g_rowc * p->h); g_rowc_n = g_rowc ? p->h : 0; }
-        if (g_colc && g_rowc) {
-            for (int x = 0; x < p->w; x++) { int c = (int)((g_cx + (x + 0.5f - g_scx) / g_k - g_map.minx) / CELL); g_colc[x] = c >= 0 && c < g_seen.gw ? c : -1; }
-            for (int y = 0; y < p->h; y++) { int c = (int)((g_cy - (y + 0.5f - g_scy) / g_k - g_map.miny) / CELL); g_rowc[y] = y >= top && c >= 0 && c < g_seen.gh ? c : -1; }
-            for (int y = top; y < p->h; y++) {
-                uint32_t *d = p->px + (size_t)y * p->stride; const uint32_t *src = g_pic + (size_t)y * p->w; int r = g_rowc[y];
-                if (r < 0) { for (int x = 0; x < p->w; x++) d[x] = C_BG; continue; }
-                size_t base = (size_t)r * g_seen.gw;
-                for (int x = 0; x < p->w; x++) { int c = g_colc[x]; size_t k = base + (size_t)c; d[x] = c >= 0 && (g_seen.bit[k >> 3] >> (k & 7) & 1) ? src[x] : C_BG; }
-            }
-        }
-    } else fill(p, 0, 0, p->w, p->h, C_BG);
-    fill(p, 0, 0, p->w, top, C_BAR);
-    char b[96]; snprintf(b, sizeof b, "%s  E %d/%d  M %d/%d", AREA_NAME[area], g_st.life, g_st.lifemax, g_st.mis, g_st.mismax); text(p, m, m, s, 0xffffffff, b);
-    (void)grid_state;
-    if (g_zoom > 1.05f) { snprintf(b, sizeof b, "x%.1f", g_zoom); text(p, p->w - m - (int)strlen(b) * 6 * s, m, s, 0xffb0b0b0, b); }
-    if (g_map.ntri) { float x, y; sxy(g_st.x, g_st.y, &x, &y); float r = fmaxf(5, p->h / 90.0f); if (y - r * 1.6f >= top) { disc(p, x, y, r * 1.6f, 0xff000000); disc(p, x, y, r, 0xff20b0ff); } }
-    else text(p, m, top + 2 * m, s, 0xffb0b0b0, "Sin mapa de esta zona");
+        icons_draw(p, top, game);
+    } else fill(p, 0, top, p->w, p->h, C_BG);
+    head_draw(p, s, area);
+    char b[16];
+    if (g_zoom > 1.05f) { snprintf(b, sizeof b, "x%.1f", g_zoom); int s2 = s * 4 / 7 < 2 ? 2 : s * 4 / 7; text(p, p->w - m - (int)strlen(b) * 6 * s2, m, s2, 0xffb0b0b0, b); }
+    if (g_map.ntri) {
+        float x, y; sxy(g_st.x, g_st.y, &x, &y);
+        if (g_ico.n) { float z = fmaxf(fminf(fmaxf(220 * g_k, p->h / 22.0f), p->h / 9.0f), 8); if (y - z / 2 >= top) icon_blit(p, I_SAMUS, 0, 0, x - z / 2, y - z / 2, x + z / 2, y + z / 2, top, 256); }
+        else { float r = fmaxf(5, p->h / 90.0f); if (y - r * 1.6f >= top) { disc(p, x, y, r * 1.6f, 0xff000000); disc(p, x, y, r, 0xff20b0ff); } }
+    } else text(p, m, top + 2 * m, s, 0xffb0b0b0, "Sin mapa de esta zona");
     return 1;
 }
