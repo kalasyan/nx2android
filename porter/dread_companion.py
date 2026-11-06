@@ -378,10 +378,18 @@ def _crop(tex, rect, width, feather=0):   # rect of tex scaled to width pixels a
     return width, h, bytes(out)
 
 
-def title_nx2t(bg, logo, width=1280):
+def logo_png(path, width=900):   # a logo image of one's own (a PNG with a transparent background) instead of the one keyed out of er_dread
+    from PIL import Image
+    im = Image.open(path).convert('RGBA'); bb = im.getchannel('A').getbbox()
+    if bb: im = im.crop(bb)
+    if im.width > width: im = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
+    return im.width, im.height, im.tobytes()
+
+
+def title_nx2t(bg, logo, width=1280, own_logo=None):
     w, h, px = _crop(bg, _content(bg), width)
     out = bytearray(b'NX2T' + struct.pack('<III', 1, w, h)) + px
-    lw, lh, lp = _logo(logo)
+    lw, lh, lp = logo_png(own_logo) if own_logo else _logo(logo)
     return bytes(out + struct.pack('<II', lw, lh) + lp)
 
 
@@ -453,7 +461,7 @@ def find_romfs(folder):
     return found[-1]
 
 
-def make(folder, out=None, log=print):
+def make(folder, out=None, log=print, logo=None):
     romfs = find_romfs(folder); out = Path(out) if out else Path(folder) / 'MetroidDread-companion'
     log(f'RomFS: {romfs}')
     toc = toc_read((romfs / 'system' / 'files.toc').read_bytes())
@@ -470,10 +478,10 @@ def make(folder, out=None, log=print):
     else:
         try: (out / 'companion' / 'icons.nx2i').write_bytes(icons_nx2i(Texture(atlas))); log(f'  {len(ICONS)} map icons from {ICON_ATLAS}')
         except ValueError as e: log(f'  {ICON_ATLAS}: {e}: the page draws plain shapes for the icons')
-    bg, logo = find_asset(romfs, TITLE_BG), find_asset(romfs, TITLE_LOGO)
+    bg, logo, own = find_asset(romfs, TITLE_BG), find_asset(romfs, TITLE_LOGO), logo
     if bg is None or logo is None: log(f'  no {TITLE_BG if bg is None else TITLE_LOGO}: the page shows text before a save is loaded')
     else:
-        try: (out / 'companion' / 'title.nx2t').write_bytes(title_nx2t(Texture(bg), Texture(logo))); log('  the logo and an illustration for the page before a save is loaded')
+        try: (out / 'companion' / 'title.nx2t').write_bytes(title_nx2t(Texture(bg), Texture(logo), own_logo=own)); log(f'  the logo{" (" + str(own) + ")" if own else ""} and an illustration for the page before a save is loaded')
         except ValueError as e: log(f'  the title page: {e}: the page shows text before a save is loaded')
     sc, orig = crc64(SCENARIO), crc64(ORIGINAL)
     if orig in by_id: raise SystemExit(f'{pkg_path} is already wrapped: give the original RomFS')
@@ -491,8 +499,8 @@ def make(folder, out=None, log=print):
 
 def main(argv=None):
     import argparse
-    ap = argparse.ArgumentParser(prog='porter dread-companion'); ap.add_argument('folder'); ap.add_argument('-o', '--out')
-    a = ap.parse_args(argv); make(a.folder, a.out); return 0
+    ap = argparse.ArgumentParser(prog='porter dread-companion'); ap.add_argument('folder'); ap.add_argument('-o', '--out'); ap.add_argument('--logo')
+    a = ap.parse_args(argv); make(a.folder, a.out, logo=a.logo); return 0
 
 
 if __name__ == '__main__': sys.exit(main())

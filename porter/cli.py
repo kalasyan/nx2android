@@ -67,6 +67,7 @@ def _parser():
         if x is not sa: x.add_argument('--package', default='', help='the app (default: the only ported game installed)')
     dc = sub.add_parser('dread-companion', help="Metroid Dread's map for the second screen page: files to copy over its data pack (kalasyan fork)")
     dc.add_argument('folder', help='the game folder of a Metroid Dread port (or its RomFS)'); dc.add_argument('-o', '--out', help='default: <folder>/MetroidDread-companion')
+    dc.add_argument('--logo', help='a PNG of the logo (transparent background) for the page before a save is loaded, instead of the one cut out of the game')
     return ap
 
 
@@ -199,7 +200,7 @@ def cmd_config(a):
 
 def cmd_dread_companion(a):
     from porter import dread_companion
-    dread_companion.make(a.folder, a.out); return 0
+    dread_companion.make(a.folder, a.out, logo=a.logo); return 0
 
 
 def cmd_saves(a):
