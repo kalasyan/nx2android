@@ -546,6 +546,7 @@ void draw_map(Canvas &c, const bjson::Value &w) {
 
 // ---- the page ----
 std::vector<uint32_t> g_canvas;
+std::atomic<int64_t> g_draw_ns{0}, g_draws{0};
 void run_action(const std::string &name, int64_t payload = 0);
 std::string label_text(const bjson::Value &w);
 // What a run of widgets shows now, as text: the layer is drawn again only when it changes.
@@ -619,7 +620,9 @@ void taps() {   // buttons under the taps, the top one
             auto r = w.nums("rect"); if (r.size() < 4) continue;
             if (x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]) hit = &w;
         }
-        if (hit) run_action(hit->str("on_tap"));
+        if (hit) { std::string on = hit->str("on_tap"); const bjson::Value *a = g_mf.get("actions") ? g_mf.get("actions")->get(on) : nullptr;
+            static int said; if (said++ < 60) logf("tap %.0f,%.0f: %s%s", x, y, on.c_str(), a && !a->str("enabled_bind").empty() && val(a->str("enabled_bind")) == 0 ? " (off)" : "");
+            run_action(on); }
     }
 }
 void run_action(const std::string &name, int64_t payload) {
@@ -691,12 +694,17 @@ extern "C" const char *belmont_shot_areas(void) { static std::string s; std::loc
 extern "C" void dm_belmont_tick(void) {
     if (g_state.load() == 0) start();
     if (g_state.load() != 1 || belmont_shot_mode) return;
+    int64_t t0 = now_ns();
     try { g_api->sample(g_inst, &g_host.api); if (g_api->tick) g_api->tick(g_inst, &g_host.api); }
     catch (...) { static int said; if (!said++) logf("the module threw"); }
-    static int64_t last; int64_t now = now_ns();
+    static int64_t last, tick_ns, ticks; int64_t now = now_ns(); tick_ns += now - t0; ticks++;
     if (now - last > 5000000000ll) {   // what the module sees, now and then
         last = now;
         logf("state: world %d map %d native %d title %d loading %d (%s)", (int)val("belmont.ui_world"), (int)val("belmont.map_ready"), (int)val("belmont.native_assets_ready"), (int)val("belmont.ui_title"), (int)val("belmont.ui_loading"), text("belmont.state_reason").c_str());
+        logf("times: module %.1f ms x%lld, page %.1f ms x%lld in 5 s; equipment: available %d page %d visible %d ready %d assets %d control %d blocked %d", ticks ? tick_ns / 1e6 / ticks : 0., (long long)ticks,
+             g_draws.load() ? g_draw_ns.load() / 1e6 / g_draws.load() : 0., (long long)g_draws.load(), (int)val("ui.equipment_available"), (int)val("ui.equipment_page"), (int)val("belmont.equipment_visible"),
+             (int)val("belmont.equipment_ready"), (int)val("belmont.equipment_assets_ready"), (int)val("belmont.equipment_control_ready"), (int)val("belmont.presentation_blocked"));
+        tick_ns = ticks = 0; g_draw_ns = 0; g_draws = 0;
     }
 }
 extern "C" int dm_belmont_draw(page *p) {
@@ -705,8 +713,9 @@ extern "C" int dm_belmont_draw(page *p) {
     image(text("belmont.pending_map_key"));   // the next map picture: the module shows it only once the host has taken it
     static int64_t ev; if (now_ns() - ev > 2000000000ll) { ev = now_ns(); evict(); }
     // the page: the widgets before the map (a layer), the map, the widgets after it (a layer); each layer drawn again only when what it shows changed
-    struct Layer { std::vector<uint32_t> px; std::string sig; };
-    static Layer under, over; static size_t map_at = SIZE_MAX;
+    int64_t t0 = now_ns();
+    struct Layer { std::vector<uint32_t> px; std::string sig; std::vector<std::pair<int, int>> span; };   // span: each row's first and past-last covered pixel
+    static Layer under, over; static size_t map_at = SIZE_MAX; static std::vector<uint32_t> base;   // base: the background with the under layer on it
     const auto &all = g_mf.get("pages")->a[0].get("widgets")->a;
     if (map_at == SIZE_MAX) { map_at = all.size(); for (size_t i = 0; i < all.size(); i++) if (all[i].str("type") == "map") map_at = i; }
     for (int li = 0; li < 2; li++) {
@@ -715,22 +724,26 @@ extern "C" int dm_belmont_draw(page *p) {
         if (sig == L.sig && !L.px.empty()) continue;
         L.sig = sig; L.px.assign((size_t)CW * CH, 0);
         Canvas lc{CW, CH, L.px.data(), CW, true}; g_layer = true; draw_widgets(lc, from, to); g_layer = false;
+        L.span.assign(CH, {0, 0});
+        for (int y = 0; y < CH; y++) { const uint32_t *r = L.px.data() + (size_t)y * CW; int a = 0, b = CW; while (a < CW && !(r[a] >> 24)) a++; while (b > a && !(r[b - 1] >> 24)) b--; L.span[y] = {a, b}; }
+        if (!li) base.clear();
     }
     g_canvas.resize((size_t)CW * CH);
     Canvas c{CW, CH, g_canvas.data(), CW};
     uint32_t bg = color(g_mf.str("background"), 0xff16191du);
-    std::fill(g_canvas.begin(), g_canvas.end(), bg);
-    auto lay = [&](const Layer &L) {   // premultiplied over opaque
-        for (size_t i = 0; i < (size_t)CW * CH; i++) {
-            uint32_t s_ = L.px[i], a = s_ >> 24; if (!a) continue;
-            if (a == 255) { g_canvas[i] = s_; continue; }
-            uint32_t d = g_canvas[i], ia = 255 - a;
-            g_canvas[i] = 0xff000000u | std::min(255u, (s_ >> 16 & 0xff) + ((d >> 16 & 0xff) * ia + 127) / 255) << 16 | std::min(255u, (s_ >> 8 & 0xff) + ((d >> 8 & 0xff) * ia + 127) / 255) << 8 | std::min(255u, (s_ & 0xff) + ((d & 0xff) * ia + 127) / 255);
+    auto lay = [&](const Layer &L, std::vector<uint32_t> &dst) {   // premultiplied over opaque, only where the layer covers
+        auto mul = [](uint32_t v, uint32_t ia) { v *= ia; return (v + 128 + ((v + 128) >> 8)) >> 8; };   // v * ia / 255, rounded
+        for (int y = 0; y < CH; y++) for (int x = L.span[y].first; x < L.span[y].second; x++) {
+            size_t i = (size_t)y * CW + x; uint32_t s_ = L.px[i], a = s_ >> 24; if (!a) continue;
+            if (a == 255) { dst[i] = s_; continue; }
+            uint32_t d = dst[i], ia = 255 - a;
+            dst[i] = 0xff000000u | std::min(255u, (s_ >> 16 & 0xff) + mul(d >> 16 & 0xff, ia)) << 16 | std::min(255u, (s_ >> 8 & 0xff) + mul(d >> 8 & 0xff, ia)) << 8 | std::min(255u, (s_ & 0xff) + mul(d & 0xff, ia));
         }
     };
-    lay(under);
+    if (base.empty()) { base.assign((size_t)CW * CH, bg); lay(under, base); }
+    memcpy(g_canvas.data(), base.data(), base.size() * 4);
     if (map_at < all.size() && shown(all[map_at])) draw_map(c, all[map_at]);
-    lay(over);
+    lay(over, g_canvas);
     bool direct = p->w == CW && p->h == CH;
     { std::lock_guard l{g_mv.mu}; g_mv.k = std::min((double)p->w / CW, (double)p->h / CH); g_mv.ox = (p->w - CW * g_mv.k) / 2; g_mv.oy = (p->h - CH * g_mv.k) / 2; }
     if (direct) for (int y = 0; y < CH; y++) memcpy(p->px + (size_t)y * p->stride, g_canvas.data() + (size_t)y * CW, CW * 4);
@@ -743,6 +756,7 @@ extern "C" int dm_belmont_draw(page *p) {
         fill(p, 0, 0, p->w, p->h, bg);
         for (int y = 0; y < (int)(CH * k); y++) { const uint32_t *s = g_canvas.data() + (size_t)std::min(CH - 1, (int)(y / k)) * CW; uint32_t *d = p->px + (size_t)(y + oy) * p->stride + ox; for (int x = 0; x < (int)(CW * k); x++) d[x] = s[std::min(CW - 1, (int)(x / k))]; }
     }
+    g_draw_ns += now_ns() - t0; g_draws++;
     return 1;
 }
 // a touch on the page (main thread): one finger moves the map, two zoom it, a tap presses a button, a double tap on the map goes back to the home view

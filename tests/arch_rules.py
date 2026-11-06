@@ -28,6 +28,7 @@ GAME_RX = re.compile(r'0100[0-9A-Fa-f]{12}|\bNEO\b|Viractal|' + '|'.join(re.esca
 hits = []
 for f in files:
     if not f.startswith('nxnative/dm/android/') or not f.endswith(('.c', '.h', '.py', '.m')): continue
+    if f.startswith('nxnative/dm/android/belmont/'): continue   # kalasyan fork: one game's companion (igawa6's module), built only for that game
     s = (R / f).read_text(encoding='utf-8', errors='replace')
     code = strip_c(s) if f.endswith(('.c', '.h', '.m')) else strip_py(s)
     code = re.sub(r'"[^"\n]*"', lambda m: m.group(0) if GAME_RX.search(m.group(0)) or any(n in m.group(0) for n in names) else '""', code)
