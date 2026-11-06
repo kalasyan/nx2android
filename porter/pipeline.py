@@ -737,7 +737,7 @@ class Port:
         h = hashlib.sha256()
         for f in files: h.update(f.relative_to(root).as_posix().encode()); h.update(f.read_bytes())
         index = self.aw / 'duo-index.txt'
-        index.write_text(h.hexdigest()[:32] + '\n' + ''.join(f.relative_to(root).as_posix() + '\n' for f in files))
+        index.write_text(h.hexdigest()[:32] + '\n' + ''.join(f.relative_to(root).as_posix() + '\n' for f in files), newline='\n')   # '\n' on Windows too: duo_host.cpp reads the names to the line end
         self.result['companion'] = package; say(f'second-screen companion: {package} (Eden Duo package, {len(files)} files) and {so.name}')
         return ['--extra-so', str(so), '--asset', f'duo/index.txt={index}'] + [a for f in files for a in ('--asset', f'duo/{f.relative_to(root).as_posix()}={f}')]
 

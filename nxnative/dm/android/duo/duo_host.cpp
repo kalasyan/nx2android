@@ -166,7 +166,9 @@ bool unpack_package(const std::string& dst) {
     AAsset_close(idx);
     // the index's first line is the package's version (its files' hash): a package already unpacked at that version is kept
     const auto nl = list.find('\n');
-    const std::string version = list.substr(0, nl), stamp = dst + "/.version";
+    std::string version = list.substr(0, nl);
+    if (!version.empty() && version.back() == '\r') version.pop_back();
+    const std::string stamp = dst + "/.version";
     if (FILE* f = fopen(stamp.c_str(), "r")) {
         char b[128] = {};
         const size_t n = fread(b, 1, sizeof b - 1, f);
@@ -179,8 +181,9 @@ bool unpack_package(const std::string& dst) {
     for (size_t at = nl == std::string::npos ? list.size() : nl + 1; at < list.size();) {
         size_t end = list.find('\n', at);
         if (end == std::string::npos) end = list.size();
-        const std::string rel = list.substr(at, end - at);
+        std::string rel = list.substr(at, end - at);
         at = end + 1;
+        if (!rel.empty() && rel.back() == '\r') rel.pop_back();   // an index written with Windows line ends
         if (rel.empty() || rel.find("..") != std::string::npos) continue;
         AAsset* a = AAssetManager_open(am, ("duo/" + rel).c_str(), AASSET_MODE_BUFFER);
         if (!a) { logf("[RED] asset duo/%s is missing", rel.c_str()); return false; }
