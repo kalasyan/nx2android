@@ -306,7 +306,7 @@ TITLE_BG = 'textures/gui/textures/ir_cave.bctex'
 TITLE_LOGO = 'textures/gui/textures/er_dread.bctex'
 LOGO_RECT = (1085, 15, 1575, 220)   # x0 y0 x1 y1 in er_dread, full size
 LOGO_WHITE = (1090, 20, 1570, 150)  # where "METROID" is: its white letters are kept
-LOGO_RED = (1140, 145, 1490, 215)   # where "DREAD" is: its red letters are kept
+LOGO_RED = (1150, 145, 1485, 215)   # where "DREAD" is: its red letters are kept
 
 
 def _logo(tex, width):   # the logo's letters only (white METROID, red DREAD), as RGBA, scaled to width pixels across
@@ -318,6 +318,14 @@ def _logo(tex, width):   # the logo's letters only (white METROID, red DREAD), a
             aw = min(255, max(0, (lo - 170) * 255 // 60)) if inr(LOGO_WHITE, x, y) and hi - lo <= 45 else 0
             ar = min(255, max(0, (r - max(g, b) - 60) * 255 // 90)) if inr(LOGO_RED, x, y) and r > 120 else 0
             out += bytes((255, 255, 255, aw * a // 255)) if aw >= ar else bytes((225, 20, 30, ar * a // 255))
+    # an opening of the alpha (the minimum, then the maximum, over 5x5): the streaks of the picture behind (2-4 pixels wide) go, the letters'
+    # strokes (18 and more) stay
+    al = [out[k] for k in range(3, len(out), 4)]
+    def over(src, pick):
+        rows = [[pick(src[y * width + max(0, x - 2):y * width + min(width, x + 3)]) for x in range(width)] for y in range(h)]
+        return [pick([rows[yy][x] for yy in range(max(0, y - 2), min(h, y + 3))]) for y in range(h) for x in range(width)]
+    al = over(over(al, min), max)
+    for k, v in enumerate(al): out[4 * k + 3] = min(out[4 * k + 3], v)
     return width, h, bytes(out)
 
 
