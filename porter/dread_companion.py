@@ -478,6 +478,7 @@ def make(folder, out=None, log=print, logo=None):
     else:
         try: (out / 'companion' / 'icons.nx2i').write_bytes(icons_nx2i(Texture(atlas))); log(f'  {len(ICONS)} map icons from {ICON_ATLAS}')
         except ValueError as e: log(f'  {ICON_ATLAS}: {e}: the page draws plain shapes for the icons')
+    if logo is None and (Path(folder) / 'logo.png').is_file(): logo = Path(folder) / 'logo.png'   # one's own logo beside the game, if there is one
     bg, logo, own = find_asset(romfs, TITLE_BG), find_asset(romfs, TITLE_LOGO), logo
     if bg is None or logo is None: log(f'  no {TITLE_BG if bg is None else TITLE_LOGO}: the page shows text before a save is loaded')
     else:
