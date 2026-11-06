@@ -58,8 +58,15 @@ def test_title():
     def px(x, y): return bytes((250, 200, 200, 255)) if x < 1600 and y < 900 else bytes((255, 255, 255, 255))
     bg = d.Texture(bctex(2048, 1024, 0x25, 4, 4, 1, px))
     assert d._content(bg)[2:] == (1600, 900)
-    out = d.title_nx2t(bg, bg, width=160)
+    def lp(x, y):
+        if 1100 <= x < 1500 and 30 <= y < 140: return bytes((250, 250, 245, 255))
+        if 1150 <= x < 1480 and 155 <= y < 210: return bytes((230, 20, 20, 255))
+        return bytes((40, 10, 60, 255))
+    logo = d.Texture(bctex(2048, 1024, 0x25, 4, 4, 1, lp))
+    out = d.title_nx2t(bg, logo, width=160)
     w, h = struct.unpack_from('<II', out, 8); assert (w, h) == (160, 90)
     at = 16 + w * h * 4; lw, lh = struct.unpack_from('<II', out, at); assert lw == 640
-    a = out[at + 8 + 3]; mid = out[at + 8 + ((lh // 2) * lw + lw // 2) * 4 + 3]
-    assert a == 0 and mid == 255
+    def px(x, y):   # the logo's pixel at er_dread's (x, y)
+        f = (d.LOGO_RECT[2] - d.LOGO_RECT[0]) / lw; i, j = round((x - d.LOGO_RECT[0]) / f), round((y - d.LOGO_RECT[1]) / f)
+        return tuple(out[at + 8 + (j * lw + i) * 4:at + 12 + (j * lw + i) * 4])
+    assert px(1300, 80) == (255, 255, 255, 255) and px(1300, 180) == (225, 20, 30, 255) and px(1088, 18)[3] == 0 and px(1520, 200)[3] == 0

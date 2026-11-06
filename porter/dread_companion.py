@@ -304,9 +304,21 @@ def find_asset(romfs, path):   # a RomFS file, loose or in one of the packs
 # the background (u32 w, h, RGBA) and the logo (u32 w, h, RGBA).
 TITLE_BG = 'textures/gui/textures/ir_cave.bctex'
 TITLE_LOGO = 'textures/gui/textures/er_dread.bctex'
-LOGO_RECT = (1070, 20, 1580, 215)   # x0 y0 x1 y1 in er_dread, full size
-FEATHER = 18
-LOGO_KEY = (60, 130)   # luminance: below the first, not drawn; above the second, drawn whole
+LOGO_RECT = (1085, 15, 1575, 220)   # x0 y0 x1 y1 in er_dread, full size
+LOGO_WHITE = (1090, 20, 1570, 150)  # where "METROID" is: its white letters are kept
+LOGO_RED = (1140, 145, 1490, 215)   # where "DREAD" is: its red letters are kept
+
+
+def _logo(tex, width):   # the logo's letters only (white METROID, red DREAD), as RGBA, scaled to width pixels across
+    x0, y0, x1, y1 = LOGO_RECT; f = (x1 - x0) / width; h = round((y1 - y0) / f); out = bytearray()
+    inr = lambda r, x, y: r[0] <= x < r[2] and r[1] <= y < r[3]
+    for j in range(h):
+        for i in range(width):
+            x, y = int(x0 + i * f), int(y0 + j * f); r, g, b, a = tex.get(x, y); lo, hi = min(r, g, b), max(r, g, b)
+            aw = min(255, max(0, (lo - 170) * 255 // 60)) if inr(LOGO_WHITE, x, y) and hi - lo <= 45 else 0
+            ar = min(255, max(0, (r - max(g, b) - 60) * 255 // 90)) if inr(LOGO_RED, x, y) and r > 120 else 0
+            out += bytes((255, 255, 255, aw * a // 255)) if aw >= ar else bytes((225, 20, 30, ar * a // 255))
+    return width, h, bytes(out)
 
 
 def _content(tex, step=8):   # the part of an illustration that is not the white padding
@@ -340,10 +352,7 @@ def _crop(tex, rect, width, feather=0):   # rect of tex scaled to width pixels a
 def title_nx2t(bg, logo, width=1280):
     w, h, px = _crop(bg, _content(bg), width)
     out = bytearray(b'NX2T' + struct.pack('<III', 1, w, h)) + px
-    lw, lh, lp = _crop(logo, LOGO_RECT, 640, FEATHER); lp = bytearray(lp)
-    for i in range(0, len(lp), 4):   # the picture behind the letters is dark: keep the bright pixels (the letters) and fade the rest out
-        lum = (lp[i] * 3 + lp[i + 1] * 6 + lp[i + 2]) / 10; k = min(1.0, max(0.0, (lum - LOGO_KEY[0]) / (LOGO_KEY[1] - LOGO_KEY[0])))
-        lp[i + 3] = int(lp[i + 3] * k)
+    lw, lh, lp = _logo(logo, 640)
     return bytes(out + struct.pack('<II', lw, lh) + lp)
 
 
