@@ -58,7 +58,7 @@ ASM = srcs('host/entry.S', 'gfx/nvn/nvn_entry.S', 'gfx/nvn/nvn_thunks.S')
 VPX = srcs('third_party/libvpx/**/*.c')
 ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader bundle's SPIR-V (gfx_vk_shader.c bundle_spv)
 # Castlevania: Belmont's Curse only: igawa6's Eden Duo companion module and its host for the second screen page (dm/android/belmont, C++, kalasyan fork)
-BELMONT_GAME = '0100BA4026E94000'
+BELMONT_GAME = (DM / 'android/belmont/title_id.txt').read_text().strip()   # the one game whose companion lives in belmont/ (kalasyan fork)
 BELMONT = srcs('android/belmont/module/*.cpp', 'android/belmont/third_party/*.cpp', 'android/belmont/third_party/lz4.c', 'android/belmont/belmont_host.cpp') if a.game.upper() == BELMONT_GAME else []
 if BELMONT:   # the package's layout, embedded: gen/<game>/belmont_manifest.c
     mf = DM / 'android/belmont/manifest.json'; mc = gen / a.game / 'belmont_manifest.c'

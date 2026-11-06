@@ -75,7 +75,7 @@ static void *companion_thread(void *a) {
     jmethodID mSurf = cH ? (*E)->GetMethodID(E, cH, "getSurface", "()Landroid/view/Surface;") : NULL, mValid = cS ? (*E)->GetMethodID(E, cS, "isValid", "()Z") : NULL;
     if (jx(E) || !mSurf || !mValid) { LOG("[RED] [companion] SurfaceHolder methods missing"); return NULL; }
     ANativeWindow *win = NULL; int64_t t0 = page_ns(), tf = t0; uint64_t f0 = dm_frames_shown(); int fps = -1, logged = 0;
-    for (;; usleep(dm_dread_active() ? 66000 : dm_belmont_active() ? 50000 : 500000)) {   // the map follows the player at 15 fps (Dread) or 20 (Castlevania)
+    for (;; usleep(dm_dread_active() ? 66000 : dm_belmont_active() ? 25000 : 500000)) {   // the map follows the player at 15 fps (Dread) or about 30 (Castlevania)
         dm_dread_tick(); dm_belmont_tick();
         int64_t t = page_ns(); uint64_t f = dm_frames_shown();
         if (t - tf >= 1000000000) { fps = (int)((f - f0) * 1000000000 / (uint64_t)(t - tf)); f0 = f; tf = t; }
