@@ -313,7 +313,7 @@ std::string text(const std::string &n) {
     return "";
 }
 void derive_ordered() {   // the package's derived values, in their order (later ones use earlier ones)
-    g_dval.clear(); size_t ei = 0;
+    for (int pass = 0; pass < 3; pass++) { size_t ei = 0;   // a value may use one defined later (ui.equipment_page uses ui.equipment_available): last pass's value, then settle
     for (const auto &d : g_mf.get("derived")->a) {
         std::string name = d.str("name"); double v = 0;
         if (d.get("expr")) { v = ei < g_derived.size() ? eval(*g_derived[ei].e) : 0; ei++; }
@@ -324,6 +324,7 @@ void derive_ordered() {   // the package's derived values, in their order (later
             std::string c = d.str("cmp"); v = c == "eq" ? a == bv : c == "ne" ? a != bv : 0;
         }
         g_dval[name] = v;
+    }
     }
 }
 bool shown(const bjson::Value &w) {
@@ -487,10 +488,10 @@ const Img &mip_for(const ImgP &base, const std::string &key, double shrink) {   
     return *g_mips.lv[std::min<size_t>(want, g_mips.lv.size() - 1)];
 }
 
+std::atomic<int64_t> g_draw_ns{0}, g_draws{0}, g_map_redraws{0}, g_layer_redraws{0};
 void draw_map(Canvas &c, const bjson::Value &w) {
     auto r = w.nums("rect"); if (r.size() < 4) return;
     double rx = r[0], ry = r[1], rw = r[2], rh = r[3];
-    fill_rect(c, (int)rx, (int)ry, (int)rw, (int)rh, color(w.str("bg"), 0xff16191du));
     std::string area = text(w.str("room_bind")), key = text(w.str("image_bind"));
     std::shared_ptr<const bjson::Value> areas; { std::lock_guard l{g_lmu}; areas = g_areas; }
     const bjson::Value *a = areas ? areas->get(area) : nullptr;
@@ -517,11 +518,22 @@ void draw_map(Canvas &c, const bjson::Value &w) {
     auto sx = [&](double x) { return rx + rw / 2 + (x - v.cx) * v.ppw; };
     auto sy = [&](double y) { return ry + rh / 2 - (y - v.cy) * v.ppw; };
     Canvas clip{(int)std::min<double>(c.w, rx + rw), (int)std::min<double>(c.h, ry + rh), c.px, c.stride};
-    // the area's picture (the module's render: rooms, fog, decoration); row 0 is the area's top (max y)
-    if (ImgP im = image(key)) {
-        double dw = (mx[0] - mn[0]) * v.ppw, dh = (mx[1] - mn[1]) * v.ppw;
-        const Img &lv = mip_for(im, key, im->w / std::max(1.0, dw));
-        draw_img(clip, lv, 0, 0, lv.w, lv.h, sx(mn[0]), sy(mx[1]), dw, dh);
+    // the area's picture (the module's render: rooms, fog, decoration); row 0 is the area's top (max y); drawn again only when the view or the picture changes
+    {
+        static std::vector<uint32_t> cache; static std::string cache_sig;
+        ImgP im = image(key); int cw = (int)rw, ch = (int)rh, x0 = (int)rx, y0 = (int)ry;
+        char sig[256]; snprintf(sig, sizeof sig, "%s|%p|%.6f|%.6f|%.6f|%d %d %d %d", key.c_str(), (const void *)im.get(), v.ppw, v.cx, v.cy, x0, y0, cw, ch);
+        if (sig != cache_sig || cache.size() != (size_t)cw * ch) {
+            cache_sig = sig; cache.assign((size_t)cw * ch, color(w.str("bg"), 0xff16191du));
+            if (im) {
+                Canvas mc{cw, ch, cache.data(), cw};
+                double dw = (mx[0] - mn[0]) * v.ppw, dh = (mx[1] - mn[1]) * v.ppw;
+                const Img &lv = mip_for(im, key, im->w / std::max(1.0, dw));
+                draw_img(mc, lv, 0, 0, lv.w, lv.h, sx(mn[0]) - x0, sy(mx[1]) - y0, dw, dh);
+            }
+            g_map_redraws++;
+        }
+        for (int y = 0; y < ch && y0 + y < c.h; y++) if (y0 + y >= 0) memcpy(c.px + (size_t)(y0 + y) * c.stride + x0, cache.data() + (size_t)y * cw, (size_t)std::min(cw, c.w - x0) * 4);
     }
     // icons: landmarks, save points, elevators, fast travel (the area table's dynamic markers)
     if (const auto *dm = a->get("dynamic_markers")) for (const auto &m : dm->a) {
@@ -546,7 +558,6 @@ void draw_map(Canvas &c, const bjson::Value &w) {
 
 // ---- the page ----
 std::vector<uint32_t> g_canvas;
-std::atomic<int64_t> g_draw_ns{0}, g_draws{0};
 void run_action(const std::string &name, int64_t payload = 0);
 std::string label_text(const bjson::Value &w);
 // What a run of widgets shows now, as text: the layer is drawn again only when it changes.
@@ -701,10 +712,10 @@ extern "C" void dm_belmont_tick(void) {
     if (now - last > 5000000000ll) {   // what the module sees, now and then
         last = now;
         logf("state: world %d map %d native %d title %d loading %d (%s)", (int)val("belmont.ui_world"), (int)val("belmont.map_ready"), (int)val("belmont.native_assets_ready"), (int)val("belmont.ui_title"), (int)val("belmont.ui_loading"), text("belmont.state_reason").c_str());
-        logf("times: module %.1f ms x%lld, page %.1f ms x%lld in 5 s; equipment: available %d page %d visible %d ready %d assets %d control %d blocked %d", ticks ? tick_ns / 1e6 / ticks : 0., (long long)ticks,
-             g_draws.load() ? g_draw_ns.load() / 1e6 / g_draws.load() : 0., (long long)g_draws.load(), (int)val("ui.equipment_available"), (int)val("ui.equipment_page"), (int)val("belmont.equipment_visible"),
+        logf("times: module %.1f ms x%lld, page %.1f ms x%lld in 5 s (map drawn again %lld, layers %lld); equipment: available %d page %d visible %d ready %d assets %d control %d blocked %d", ticks ? tick_ns / 1e6 / ticks : 0., (long long)ticks,
+             g_draws.load() ? g_draw_ns.load() / 1e6 / g_draws.load() : 0., (long long)g_draws.load(), (long long)g_map_redraws.load(), (long long)g_layer_redraws.load(), (int)val("ui.equipment_available"), (int)val("ui.equipment_page"), (int)val("belmont.equipment_visible"),
              (int)val("belmont.equipment_ready"), (int)val("belmont.equipment_assets_ready"), (int)val("belmont.equipment_control_ready"), (int)val("belmont.presentation_blocked"));
-        tick_ns = ticks = 0; g_draw_ns = 0; g_draws = 0;
+        tick_ns = ticks = 0; g_draw_ns = 0; g_draws = 0; g_map_redraws = 0; g_layer_redraws = 0;
     }
 }
 extern "C" int dm_belmont_draw(page *p) {
@@ -722,7 +733,7 @@ extern "C" int dm_belmont_draw(page *p) {
         Layer &L = li ? over : under; size_t from = li ? map_at + 1 : 0, to = li ? all.size() : map_at;
         std::string sig = layer_sig(from, to);
         if (sig == L.sig && !L.px.empty()) continue;
-        L.sig = sig; L.px.assign((size_t)CW * CH, 0);
+        L.sig = sig; L.px.assign((size_t)CW * CH, 0); g_layer_redraws++;
         Canvas lc{CW, CH, L.px.data(), CW, true}; g_layer = true; draw_widgets(lc, from, to); g_layer = false;
         L.span.assign(CH, {0, 0});
         for (int y = 0; y < CH; y++) { const uint32_t *r = L.px.data() + (size_t)y * CW; int a = 0, b = CW; while (a < CW && !(r[a] >> 24)) a++; while (b > a && !(r[b - 1] >> 24)) b--; L.span[y] = {a, b}; }
