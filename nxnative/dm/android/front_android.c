@@ -1111,6 +1111,7 @@ static void pick_root(ANativeActivity *act, int *asked) {
     if (!find_pack(SHARED_ROOT, pkg, SHARED_DEPTH, found, sizeof found)) return;
     snprintf(g_root, sizeof g_root, "%s", found);
     if ((f = fopen(memo, "w"))) { fprintf(f, "%s\n", found); fclose(f); }
+}
 // ---- a RomFS outside the app's files folder (env.txt's DM_ROMFS, written by porter install --romfs-at: a game dump another app also reads, a folder on the SD card). The app
 // reads it only with All files access (the appop MANAGE_EXTERNAL_STORAGE, Android 11 on) or, on Android 10, READ_EXTERNAL_STORAGE in the legacy storage view: mkapk.py asks
 // for both and porter grants them over adb. Without it scoped storage gives the app none of the files another app made there, and the game would fail somewhere in its
