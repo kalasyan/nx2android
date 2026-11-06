@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <bit>
-#include <cassert>
+// As in Eden release builds: a bad block gives the error colour (FillError), never an abort (kalasyan fork).
+#undef assert
+#define assert(x) ((void)0)
 #include <cstring>
 #include <span>
 #include <vector>

@@ -78,7 +78,7 @@ ZSTD_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB
 
 CXX = str(bin_ / ('clang++.exe' if os.name == 'nt' else 'clang++'))
 BL = DM / 'android/belmont'
-BELMONT_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-D_GNU_SOURCE', '-w', f'-I{BL / "eden"}', f'-I{BL / "third_party"}', f'-I{BL / "module"}', f'-I{BL}', f'-I{DM / "android"}']
+BELMONT_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-D_GNU_SOURCE', '-DNDEBUG', '-w', f'-I{BL / "eden"}', f'-I{BL / "third_party"}', f'-I{BL / "module"}', f'-I{BL}', f'-I{DM / "android"}']
 
 import hashlib, shutil
 _stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, BELMONT_FLAGS, CC)).encode()).hexdigest()

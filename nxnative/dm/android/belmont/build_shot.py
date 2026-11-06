@@ -6,7 +6,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ap = argparse.ArgumentParser()
-ap.add_argument('--ndk', default=os.environ.get('ANDROID_NDK_HOME') or str(HERE.parents[3] / 'tools/android-ndk-r27c'))
+def _ndk():
+    for d in (os.environ.get('ANDROID_NDK_HOME'), HERE.parents[3] / 'tools/android-ndk-r27c', Path(os.environ.get('APPDATA', '~')).expanduser() / 'nx2android/toolchains/android-ndk-r27c'):
+        if d and Path(d).is_dir(): return str(d)
+    return str(HERE.parents[3] / 'tools/android-ndk-r27c')
+ap.add_argument('--ndk', default=_ndk())
 ap.add_argument('--out', default=str(HERE / 'out'))
 a = ap.parse_args()
 host = 'windows-x86_64' if os.name == 'nt' else 'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64'
@@ -14,7 +18,7 @@ bin_ = Path(a.ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
 exe = '.exe' if os.name == 'nt' else ''
 CC, CXX = str(bin_ / f'clang{exe}'), str(bin_ / f'clang++{exe}')
 out = Path(a.out); (out / 'obj').mkdir(parents=True, exist_ok=True)
-flags = ['--target=aarch64-linux-android31', '-O2', '-fPIC', '-fvisibility=hidden', '-D_GNU_SOURCE', '-w'] + [f'-I{p}' for p in (HERE / 'eden', HERE / 'third_party', HERE / 'module', HERE, HERE.parent)]
+flags = ['--target=aarch64-linux-android31', '-O2', '-fPIC', '-fvisibility=hidden', '-D_GNU_SOURCE', '-DNDEBUG', '-w'] + [f'-I{p}' for p in (HERE / 'eden', HERE / 'third_party', HERE / 'module', HERE, HERE.parent)]
 data = (HERE / 'manifest.json').read_bytes()
 (out / 'belmont_manifest.c').write_text('const unsigned char belmont_manifest_json[] = {' + ','.join(map(str, data)) + ',0};\nconst unsigned belmont_manifest_json_len = %d;\n' % len(data))
 srcs = sorted((HERE / 'module').glob('*.cpp')) + sorted((HERE / 'third_party').glob('*.cpp')) + [HERE / 'belmont_host.cpp', HERE / 'belmont_shot.cpp', HERE / 'third_party/lz4.c', out / 'belmont_manifest.c']
