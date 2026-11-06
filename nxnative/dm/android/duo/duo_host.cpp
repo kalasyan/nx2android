@@ -506,7 +506,9 @@ std::vector<u8> GameIconJpeg() {
 extern "C" int dm_duo_active(void) { return g_state.load() >= 0; } // until it is known to be off: the page is the companion's
 
 extern "C" void dm_duo_tick(void) {
-    if (g_state.load() == 0) start();
+    // started after the game's first frame (or 90 s, a game that shows none yet): loading the package and the module's 58k-glyph font
+    // beside the game's own boot slowed its first frame from under 60 s to 100 s on the AYN Thor
+    if (g_state.load() == 0 && (dm_frames_shown() > 0 || Clock::now() - g_t0 > std::chrono::seconds(90))) start();
 }
 
 extern "C" int dm_duo_draw(page* p) {

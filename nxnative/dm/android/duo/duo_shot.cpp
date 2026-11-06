@@ -29,7 +29,7 @@ const char* g_build = "ff1d1c05670db6021c85b624a710b963";   // Animal Crossing: 
 extern "C" {
 int dm_companion_main_module(uint8_t** base, size_t* size, const char** build) { *base = g_main.data(); *size = g_main.size(); *build = getenv("DUO_SHOT_BUILD") ? getenv("DUO_SHOT_BUILD") : g_build; return 1; }
 void svc_heap_range(uint8_t** base, size_t* size) { *base = nullptr; *size = 0; }
-uint64_t dm_frames_shown(void) { return 0; }
+uint64_t dm_frames_shown(void) { return 1; }   // the game is up: the companion starts at once
 void* dm_front_assets(void) { return nullptr; }
 void dm_hid_player1(uint64_t* b, int32_t* a) { *b = 0; for (int i = 0; i < 4; i++) a[i] = 0; }
 void dm_haptics_android_tap(void) {}
