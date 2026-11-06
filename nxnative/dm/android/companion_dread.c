@@ -305,11 +305,33 @@ static void disc(page *p, float cx, float cy, float r, uint32_t c) {
     for (int y = (int)(cy - r); y <= (int)(cy + r); y++) for (int x = (int)(cx - r); x <= (int)(cx + r); x++)
         if ((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy) <= r * r && x >= 0 && y >= 0 && x < p->w && y < p->h) p->px[(size_t)y * p->stride + x] = c;
 }
+static int seen_at(float wx, float wy) {   // the page's own fog: Samus has been near
+    int c = (int)((wx - g_map.minx) / CELL), r = (int)((wy - g_map.miny) / CELL);
+    if (!g_seen.bit || c < 0 || r < 0 || c >= g_seen.gw || r >= g_seen.gh) return 0;
+    size_t k = (size_t)r * g_seen.gw + c; return g_seen.bit[k >> 3] >> (k & 7) & 1;
+}
+// zoom 1 frames what is explored (with a margin, at least MINVIEW units across), not the whole area: an area is up to 60000 units wide, and early on
+// the explored part of it would be a strip a few pixels high. Taken again every 2 s, from the game's grid or the page's own fog.
+#define MINVIEW 9000.0f
+static float g_ex[4]; static int g_exarea; static int64_t g_ext;   // the explored part's bounds, of g_exarea, at g_ext
+static int grid_state(float wx, float wy);
+static void explored(int game, int area) {
+    int64_t now = (int64_t)now_ns(); if (g_exarea == area && now - g_ext < 2000000000) return;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (float y = g_map.miny; y <= g_map.maxy; y += CELL) for (float x = g_map.minx; x <= g_map.maxx; x += CELL) {
+        if (game ? grid_state(x, y) <= 1 : !seen_at(x, y)) continue;
+        x0 = fminf(x0, x); y0 = fminf(y0, y); x1 = fmaxf(x1, x + CELL); y1 = fmaxf(y1, y + CELL);
+    }
+    float sx = fmaxf(fminf(g_st.x, g_map.maxx), g_map.minx), sy = fmaxf(fminf(g_st.y, g_map.maxy), g_map.miny);   // Samus is always in it
+    x0 = fminf(x0, sx); y0 = fminf(y0, sy); x1 = fmaxf(x1, sx); y1 = fmaxf(y1, sy);
+    float m = 600, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hw = fmaxf((x1 - x0) / 2 + m, MINVIEW / 2), hh = fmaxf((y1 - y0) / 2 + m, MINVIEW / 4);
+    pthread_mutex_lock(&g_vmu); g_ex[0] = cx - hw; g_ex[1] = cy - hh; g_ex[2] = cx + hw; g_ex[3] = cy + hh; g_exarea = area; g_ext = now; pthread_mutex_unlock(&g_vmu);
+}
 static void view_set(int w, int h, int top) {   // g_k, g_cx, g_cy for this pass, from the view the touches left
-    float m = h / 40.0f, aw = w - 2 * m, ah = h - top - 2 * m, mw = g_map.maxx - g_map.minx, mh = g_map.maxy - g_map.miny;
     pthread_mutex_lock(&g_vmu);
+    float m = h / 40.0f, aw = w - 2 * m, ah = h - top - 2 * m, mw = g_ex[2] - g_ex[0], mh = g_ex[3] - g_ex[1];
     g_k0 = fminf(aw / mw, ah / mh); g_scx = w / 2.0f; g_scy = top + (h - top) / 2.0f;
-    float midx = (g_map.minx + g_map.maxx) / 2, midy = (g_map.miny + g_map.maxy) / 2;
+    float midx = (g_ex[0] + g_ex[2]) / 2, midy = (g_ex[1] + g_ex[3]) / 2;
     if (g_zoom <= 1.05f) { g_vcx = midx; g_vcy = midy; }
     else if (g_follow) {   // keep Samus in the middle third: the picture is made again only when she leaves it
         float k = g_k0 * g_zoom, hx = (w / 2.0f) / k / 3, hy = ((h - top) / 2.0f) / k / 3;
@@ -415,11 +437,6 @@ static int grid_state(float wx, float wy) {   // the game's state of the cell at
     if (c < 0 || r < 0 || c >= GCOLS || r >= GROWS) return -1;
     return g_cells[(size_t)r * GROWB + (size_t)c * GSTRIDE + 8];
 }
-static int seen_at(float wx, float wy) {   // the page's own fog: Samus has been near
-    int c = (int)((wx - g_map.minx) / CELL), r = (int)((wy - g_map.miny) / CELL);
-    if (!g_seen.bit || c < 0 || r < 0 || c >= g_seen.gw || r >= g_seen.gh) return 0;
-    size_t k = (size_t)r * g_seen.gw + c; return g_seen.bit[k >> 3] >> (k & 7) & 1;
-}
 
 // the header: the area's name over a line, energy and missiles under it with the game's tank icons
 static int head_h(int s) { int s2 = s * 4 / 7 < 2 ? 2 : s * 4 / 7, m = 3 * s; return m + 7 * s + m + 7 * s2 + 4 + m; }
@@ -475,7 +492,7 @@ int dm_dread_draw(page *p) {
     if (area != g_map_area) { map_load(area); if (g_map.ntri) seen_load(area); }
     if (g_map.ntri) {
         if (g_seen.area == area && g_seen.bit && !(g_cells && g_garea == area)) { seen_reveal(g_st.x, g_st.y); if (g_seen.dirty && (int64_t)now_ns() - g_seen.saved > 10000000000LL) seen_save(); }
-        view_set(p->w, p->h, top);
+        explored(g_cells && g_garea == area, area); view_set(p->w, p->h, top);
         if (g_pic_area != area || g_pic_w != p->w || g_pic_h != p->h || g_top != top || g_pk != g_k || g_pcx != g_cx || g_pcy != g_cy) pic_make(p->w, p->h, top, area);
     }
     int game = g_map.ntri && g_pic && g_cells && g_garea == area;   // the game's own explored map; else the page's own fog
