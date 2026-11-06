@@ -309,24 +309,45 @@ LOGO_WHITE = (1090, 20, 1570, 150)  # where "METROID" is: its white letters are 
 LOGO_RED = (1150, 145, 1485, 215)   # where "DREAD" is: its red letters are kept
 
 
-def _logo(tex, width):   # the logo's letters only (white METROID, red DREAD), as RGBA, scaled to width pixels across
-    x0, y0, x1, y1 = LOGO_RECT; f = (x1 - x0) / width; h = round((y1 - y0) / f); out = bytearray()
+def _logo(tex, width=None):
+    """The logo's letters (white METROID, red DREAD) with their own colours, as RGBA at er_dread's own size (the page scales it smoothly):
+    each word keyed by its colour inside its box, then what is thinner than a letter's stroke (the picture's streaks, which cross and touch the
+    letters) taken out: an opening of the alpha over 7x7, red kept only where it is 6 or more pixels tall, and specks under 150 pixels dropped"""
+    x0, y0, x1, y1 = LOGO_RECT; w, h = x1 - x0, y1 - y0
     inr = lambda r, x, y: r[0] <= x < r[2] and r[1] <= y < r[3]
-    for j in range(h):
-        for i in range(width):
-            x, y = int(x0 + i * f), int(y0 + j * f); r, g, b, a = tex.get(x, y); lo, hi = min(r, g, b), max(r, g, b)
-            aw = min(255, max(0, (lo - 170) * 255 // 60)) if inr(LOGO_WHITE, x, y) and hi - lo <= 45 else 0
+    rgb, al, red = [], [], []
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b, a = tex.get(x, y); lo, hi = min(r, g, b), max(r, g, b)
+            aw = min(255, max(0, (lo - 150) * 255 // 50)) if inr(LOGO_WHITE, x, y) and hi - lo <= 45 else 0
             ar = min(255, max(0, (r - max(g, b) - 60) * 255 // 90)) if inr(LOGO_RED, x, y) and r > 120 else 0
-            out += bytes((255, 255, 255, aw * a // 255)) if aw >= ar else bytes((225, 20, 30, ar * a // 255))
-    # an opening of the alpha (the minimum, then the maximum, over 5x5): the streaks of the picture behind (2-4 pixels wide) go, the letters'
-    # strokes (18 and more) stay
-    al = [out[k] for k in range(3, len(out), 4)]
-    def over(src, pick):
-        rows = [[pick(src[y * width + max(0, x - 2):y * width + min(width, x + 3)]) for x in range(width)] for y in range(h)]
-        return [pick([rows[yy][x] for yy in range(max(0, y - 2), min(h, y + 3))]) for y in range(h) for x in range(width)]
-    al = over(over(al, min), max)
-    for k, v in enumerate(al): out[4 * k + 3] = min(out[4 * k + 3], v)
-    return width, h, bytes(out)
+            rgb.append((r, g, b)); al.append(max(aw, ar) * a // 255); red.append(ar > aw)
+    def over(src, pick, n=3):
+        rows = [[pick(src[y * w + max(0, x - n):y * w + min(w, x + n + 1)]) for x in range(w)] for y in range(h)]
+        return [pick([rows[yy][x] for yy in range(max(0, y - n), min(h, y + n + 1))]) for y in range(h) for x in range(w)]
+    op = over(over(al, min), max); al = [min(a, o) for a, o in zip(al, op)]
+    for x in range(w):   # red runs under 6 pixels tall (the dashes between DREAD's letters)
+        y = 0
+        while y < h:
+            if not (red[y * w + x] and al[y * w + x] > 40): y += 1; continue
+            e = y
+            while e < h and red[e * w + x] and al[e * w + x] > 40: e += 1
+            if e - y < 6:
+                for k in range(y, e): al[k * w + x] = 0
+            y = e
+    seen = [False] * (w * h)   # specks
+    for i in range(w * h):
+        if seen[i] or al[i] <= 40: continue
+        comp, st = [], [i]; seen[i] = True
+        while st:
+            j = st.pop(); comp.append(j); jx, jy = j % w, j // w
+            for k in (j - 1 if jx else -1, j + 1 if jx < w - 1 else -1, j - w, j + w):
+                if 0 <= k < w * h and not seen[k] and al[k] > 40: seen[k] = True; st.append(k)
+        if len(comp) < 150:
+            for j in comp: al[j] = 0
+    out = bytearray()
+    for (r, g, b), a in zip(rgb, al): out += bytes((r, g, b, a))
+    return w, h, bytes(out)
 
 
 def _content(tex, step=8):   # the part of an illustration that is not the white padding
@@ -360,7 +381,7 @@ def _crop(tex, rect, width, feather=0):   # rect of tex scaled to width pixels a
 def title_nx2t(bg, logo, width=1280):
     w, h, px = _crop(bg, _content(bg), width)
     out = bytearray(b'NX2T' + struct.pack('<III', 1, w, h)) + px
-    lw, lh, lp = _logo(logo, 640)
+    lw, lh, lp = _logo(logo)
     return bytes(out + struct.pack('<II', lw, lh) + lp)
 
 

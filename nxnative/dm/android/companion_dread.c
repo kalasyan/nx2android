@@ -512,14 +512,20 @@ static int title_draw(page *p) {
             }
         }
         float lw = p->w * 0.72f, lh = lw * g_ti.lh / g_ti.lw, lx = (p->w - lw) / 2, ly = p->h * 0.36f - lh / 2;   // the logo
-        for (int y = (int)ly; y < (int)(ly + lh); y++) {
+        for (int y = (int)ly; y < (int)(ly + lh); y++) {   // bilinear, with the colours weighted by their alpha
             if (y < 0 || y >= p->h) continue;
-            int sy = (int)((y - ly) / lh * g_ti.lh); if (sy >= g_ti.lh) sy = g_ti.lh - 1;
+            float fy = (y + 0.5f - ly) / lh * g_ti.lh - 0.5f; int y0 = (int)floorf(fy); float ty = fy - y0;
             for (int x = (int)lx; x < (int)(lx + lw); x++) {
                 if (x < 0 || x >= p->w) continue;
-                int sx = (int)((x - lx) / lw * g_ti.lw); if (sx >= g_ti.lw) sx = g_ti.lw - 1;
-                uint32_t c = g_ti.logo[(size_t)sy * g_ti.lw + sx], *d = &g_ti.pic[(size_t)y * p->w + x], o = *d, r = 0xff000000u; unsigned a = c >> 24;
-                for (int sh = 0; sh < 24; sh += 8) r |= ((((c >> sh) & 255) * a + ((o >> sh) & 255) * (255 - a)) / 255) << sh;
+                float fx = (x + 0.5f - lx) / lw * g_ti.lw - 0.5f; int x0 = (int)floorf(fx); float tx = fx - x0, acc[4] = {0, 0, 0, 0};
+                for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+                    int sx = x0 + i, sy = y0 + j; if (sx < 0 || sy < 0 || sx >= g_ti.lw || sy >= g_ti.lh) continue;
+                    uint32_t c = g_ti.logo[(size_t)sy * g_ti.lw + sx]; float wgt = (i ? tx : 1 - tx) * (j ? ty : 1 - ty), a = (c >> 24) * wgt;
+                    acc[0] += (c & 255) * a; acc[1] += (c >> 8 & 255) * a; acc[2] += (c >> 16 & 255) * a; acc[3] += a;
+                }
+                if (acc[3] < 0.5f) continue;
+                uint32_t *d = &g_ti.pic[(size_t)y * p->w + x], o = *d, r = 0xff000000u; float al = acc[3] / 255;
+                for (int k = 0; k < 3; k++) r |= (uint32_t)lrintf(acc[k] / acc[3] * al + ((o >> 8 * k) & 255) * (1 - al)) << 8 * k;
                 *d = r;
             }
         }

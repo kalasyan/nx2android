@@ -61,12 +61,14 @@ def test_title():
     def lp(x, y):
         if 1100 <= x < 1500 and 30 <= y < 140: return bytes((250, 250, 245, 255))
         if 1150 <= x < 1480 and 155 <= y < 210: return bytes((230, 20, 20, 255))
+        if 1200 <= x < 1400 and 147 <= y < 150: return bytes((230, 20, 20, 255))   # a thin red streak: dropped
+        if 1095 <= x < 1098 and 20 <= y < 23: return bytes((250, 250, 250, 255))   # a white speck: dropped
         return bytes((40, 10, 60, 255))
     logo = d.Texture(bctex(2048, 1024, 0x25, 4, 4, 1, lp))
     out = d.title_nx2t(bg, logo, width=160)
     w, h = struct.unpack_from('<II', out, 8); assert (w, h) == (160, 90)
-    at = 16 + w * h * 4; lw, lh = struct.unpack_from('<II', out, at); assert lw == 640
+    at = 16 + w * h * 4; lw, lh = struct.unpack_from('<II', out, at); assert (lw, lh) == (d.LOGO_RECT[2] - d.LOGO_RECT[0], d.LOGO_RECT[3] - d.LOGO_RECT[1])
     def px(x, y):   # the logo's pixel at er_dread's (x, y)
-        f = (d.LOGO_RECT[2] - d.LOGO_RECT[0]) / lw; i, j = round((x - d.LOGO_RECT[0]) / f), round((y - d.LOGO_RECT[1]) / f)
+        i, j = x - d.LOGO_RECT[0], y - d.LOGO_RECT[1]
         return tuple(out[at + 8 + (j * lw + i) * 4:at + 12 + (j * lw + i) * 4])
-    assert px(1300, 80) == (255, 255, 255, 255) and px(1300, 180) == (225, 20, 30, 255) and px(1088, 18)[3] == 0 and px(1520, 200)[3] == 0
+    assert px(1300, 80) == (250, 250, 245, 255) and px(1300, 180) == (230, 20, 20, 255) and px(1088, 18)[3] == 0 and px(1520, 200)[3] == 0 and px(1300, 148)[3] == 0 and px(1096, 21)[3] == 0
