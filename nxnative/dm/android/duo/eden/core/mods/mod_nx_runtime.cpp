@@ -30,14 +30,11 @@
 #include "common/settings.h"
 #include "common/stb.h"
 #include "core/core.h"
-#include "core/file_sys/control_metadata.h"
-#include "core/file_sys/patch_manager.h"
+#include "duo_platform.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/mods/mod_yaz0.h"
 #include "core/mods/mod_bfres.h"
-#include "core/hle/service/ns/language.h"
-#include "core/hle/service/set/settings_types.h"
 #include "core/mods/mod_msbt.h"
 #include "core/mods/mod_nx_assets.h"
 #include "core/mods/mod_runtime.h"
@@ -2201,6 +2198,7 @@ void ModRuntime::NxImageDump(const std::string& args) {
 
 namespace {
 
+#if 0 // nx2android: the port names the game's language itself (DuoHost::GameLanguage)
 std::string_view ApplicationLanguageName(Service::NS::ApplicationLanguage lang) {
     using L = Service::NS::ApplicationLanguage;
     switch (lang) {
@@ -2245,6 +2243,8 @@ std::string_view ApplicationLanguageName(Service::NS::ApplicationLanguage lang) 
     }
 }
 
+#endif
+
 std::string ReplaceAll(std::string text, std::string_view what, std::string_view with) {
     for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at)) {
         text.replace(at, what.size(), with);
@@ -2263,27 +2263,9 @@ void ModRuntime::ResolveMsbtLanguage() {
     m.settings_index = static_cast<s32>(Settings::values.language_index.GetValue());
     m.settings_name =
         std::string{Settings::CanonicalizeEnum(Settings::values.language_index.GetValue())};
-    // What the game itself is given: IApplicationFunctions::GetDesiredLanguage = the settings
-    // language, walked down its priority list until the title's NACP supports one.
-    if (m.settings_index >= 0 &&
-        static_cast<size_t>(m.settings_index) < Service::Set::available_language_codes.size()) {
-        const auto code =
-            Service::Set::available_language_codes[static_cast<size_t>(m.settings_index)];
-        const auto metadata =
-            FileSys::PatchManager::GetMetadataFromBaseOrUpdate(system, manifest.title_id);
-        m.nacp_languages = metadata.first != nullptr ? metadata.first->GetSupportedLanguages() : 0;
-        if (const auto app = Service::NS::ConvertToApplicationLanguage(code)) {
-            if (const auto* const list = Service::NS::GetApplicationLanguagePriorityList(*app)) {
-                for (const auto lang : *list) {
-                    const u32 flag = Service::NS::GetSupportedLanguageFlag(lang);
-                    if (m.nacp_languages == 0 || (m.nacp_languages & flag) == flag) {
-                        m.desired = std::string{ApplicationLanguageName(lang)};
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    // What the game itself is given: the port's GetDesiredLanguage (nx2android: DuoHost::GameLanguage, an ApplicationLanguage
+    // name such as "Spanish"; Eden walked the settings language's priority list against the title's NACP)
+    m.desired = DuoHost::GameLanguage();
     const auto& cfg = manifest.msbt;
     for (const std::string& key : {m.desired, std::to_string(m.settings_index), m.settings_name}) {
         if (key.empty()) {

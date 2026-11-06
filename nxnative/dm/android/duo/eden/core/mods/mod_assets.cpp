@@ -31,17 +31,8 @@
 #include "bc_decoder.h"
 #include "common/logging.h"
 #include "common/stb.h"
-#include "core/file_sys/content_archive.h"
-#include "core/file_sys/patch_manager.h"
-#include "core/file_sys/registered_cache.h"
-#include "core/file_sys/romfs.h"
-#include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_types.h"
-#include "core/hle/kernel/k_process.h"
-#include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/filesystem/romfs_controller.h"
-#include "core/loader/loader.h"
 #include "core/mods/mod_font_epoch.h"
 #include "core/mods/mod_font_pages.h"
 #include "core/mods/mod_nx_assets.h"
@@ -49,6 +40,7 @@
 #include "core/mods/mod_runtime.h"
 #include "core/mods/mod_sysfont_source.h"
 #include "core/mods/mod_user_source.h"
+#include "duo_platform.h"
 
 namespace Core::Mods {
 
@@ -108,50 +100,7 @@ private:
     mutable std::mutex mutex;
 };
 
-/// The game's romfs as RomFSFactory::OpenCurrentProcess opens it, built from objects of our own:
-/// a second loader over the game file gives the base romfs and any packed update, and PatchRomFS
-/// makes its own update NCA over a base NCA of its own. Only raw files are shared with the game's
-/// storage chain, never a cipher or table layer.
-FileSys::VirtualFile OpenPrivateRomFS(Core::System& system, u64 program_id) {
-    const auto started = std::chrono::steady_clock::now();
-    const auto loader = Loader::GetLoader(system, system.GetAppLoader().GetFile(), program_id, 0);
-    if (!loader) {
-        return nullptr;
-    }
-    FileSys::VirtualFile base;
-    if (loader->ReadRomFS(base) != Loader::ResultStatus::Success) {
-        base = nullptr;
-    }
-    FileSys::VirtualFile romfs = base;
-    if (loader->IsRomFSUpdatable()) {
-        FileSys::VirtualFile packed_update;
-        if (loader->ReadUpdateRaw(packed_update) != Loader::ResultStatus::Success) {
-            packed_update = nullptr;
-        }
-        const auto& provider = system.GetContentProvider();
-        std::shared_ptr<FileSys::NCA> base_nca =
-            provider.GetEntry(program_id, FileSys::ContentRecordType::Program);
-        if (base_nca == nullptr) {
-            // Booted from a file no content provider knows (eden-cli with a loose NSP): take the
-            // base Program NCA from the game file itself, as a fresh object of our own, or the
-            // update would be skipped and this chain would serve the base romfs only.
-            base_nca = FileSys::OpenProgramNcaFromGameFile(system.GetAppLoader().GetFile(),
-                                                           program_id);
-        }
-        const FileSys::PatchManager patch_manager{program_id, system.GetFileSystemController(),
-                                                  provider};
-        romfs = patch_manager.PatchRomFS(base_nca.get(), base, FileSys::ContentRecordType::Program,
-                                         packed_update);
-    }
-    if (romfs) {
-        LOG_INFO(
-            Core, "DSMod: private romfs chain ({}, {:.1f} MB) built in {:.1f} ms",
-            romfs == base ? "base" : "patched", romfs->GetSize() / 1048576.0,
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
-                .count());
-    }
-    return romfs;
-}
+// nx2android: no OpenPrivateRomFS: the game's RomFS is the data pack's RomFS/ folder (OpenGameRomFS)
 } // namespace
 
 std::vector<u8> ModRuntime::ReadAssetBytes(const std::string& src) {
@@ -207,42 +156,16 @@ void ModRuntime::RegisterAssetSources() {
     asset_sources->Register(MakeUserSource(UserSourceDir(UserSourceRoot(), manifest.title_id)));
     // Runtime 23: the console's shared system fonts, from the REAL firmware archives only
     // (mod_sysfont_source.h) -- no SynthesizeSystemArchive fallback here, unlike pl:u itself.
-    asset_sources->Register(MakeSysfontSource([this](u64 archive_id) -> FileSys::VirtualDir {
-        const auto* const nand = system.GetFileSystemController().GetSystemNANDContents();
-        if (nand == nullptr) {
-            return nullptr;
-        }
-        const auto nca = nand->GetEntry(archive_id, FileSys::ContentRecordType::Data);
-        const auto romfs = nca ? nca->GetRomFS() : nullptr;
-        return romfs ? FileSys::ExtractRomFS(romfs) : nullptr;
-    }));
+    // nx2android: the port has no firmware, so the shared system fonts are not there ("sysfont:" reads as empty)
+    asset_sources->Register(MakeSysfontSource([](u64) -> FileSys::VirtualDir { return nullptr; }));
 }
 
 FileSys::VirtualDir ModRuntime::OpenGameRomFS() {
     if (!IsOwnerContext()) {
         return nullptr;
     }
-    FileSys::VirtualDir root;
-    auto* const process = OwnerProcess();
-    if (process != nullptr) {
-        Service::FileSystem::ProgramId program_id{};
-        std::shared_ptr<Service::FileSystem::SaveDataController> save_data;
-        std::shared_ptr<Service::FileSystem::RomFsController> romfs;
-        const auto result = system.GetFileSystemController().OpenProcess(
-            &program_id, &save_data, &romfs, process->GetProcessId());
-        if (R_SUCCEEDED(result) && romfs) {
-            // The asset worker reads while the game does: never through the game's own chain.
-            auto raw = OpenPrivateRomFS(system, program_id);
-            if (!raw) {
-                raw = romfs->OpenRomFSCurrentProcess();
-                LOG_WARNING(Core, "DSMod: no private romfs chain, sharing the game's ({})",
-                            raw ? "reads may race the game's" : "unavailable");
-            }
-            if (raw) {
-                root = FileSys::ExtractRomFS(std::make_shared<SerialVfsFile>(std::move(raw)));
-            }
-        }
-    }
+    // nx2android: the data pack's RomFS/ folder (base + update, merged by porter) instead of the game's process chain
+    FileSys::VirtualDir root = DuoHost::GameRomfs();
     // An unavailable romfs is asked again (retry_ms): say so the first few times only.
     static std::atomic<u32> unavailable_logged{0};
     if (root || unavailable_logged.fetch_add(1, std::memory_order_relaxed) < 3) {

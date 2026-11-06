@@ -38,7 +38,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/vfs/vfs_types.h"
-#include "core/hle/service/filesystem/filesystem.h"
+#include "duo_platform.h"
 #include "core/mods/mod_input_tokens.h"
 #include "core/mods/mod_nx_assets.h"
 #include "core/mods/mod_package_io.h"
@@ -2548,7 +2548,9 @@ std::optional<Manifest> ModRuntime::IdleManifest(u64 title_id) {
 
 std::optional<Manifest> ModRuntime::Discover(System& system, u64 title_id,
                                              const std::array<u8, 0x20>& build_id) {
-    auto load_dir = system.GetFileSystemController().GetModificationLoadRoot(title_id);
+    // nx2android: the packages are the port's own (duo_platform.h), not a load/<title> folder of the emulator's
+    (void)system;
+    auto load_dir = DuoHost::PackageDir();
     if (!load_dir) {
         LOG_INFO(Core, "DSMod: no mod load root for title {:016X}", title_id);
         return std::nullopt;

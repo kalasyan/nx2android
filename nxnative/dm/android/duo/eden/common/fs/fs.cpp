@@ -6,7 +6,7 @@
 
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
 #include "common/fs/fs_android.h"
 #endif
 #include "common/fs/path_util.h"
@@ -19,7 +19,7 @@ namespace fs = std::filesystem;
 // File Operations
 
 bool NewFile(const fs::path& path, u64 size) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) {
         if (!Android::OperateDocument(path, "", 1)) return false;
         IOFile file{path, FileAccessMode::ReadWrite};
@@ -64,7 +64,7 @@ bool NewFile(const fs::path& path, u64 size) {
 }
 
 bool RemoveFile(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) return Android::OperateDocument(path, "", 2);
 #endif
     if (!ValidatePath(path)) {
@@ -101,7 +101,7 @@ bool RemoveFile(const fs::path& path) {
 }
 
 bool RenameFile(const fs::path& old_path, const fs::path& new_path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(old_path) || Android::IsContentUri(new_path))
         return Android::OperateDocument(old_path, new_path, 5);
 #endif
@@ -183,7 +183,7 @@ std::shared_ptr<IOFile> FileOpen(const fs::path& path, FileAccessMode mode, File
 // Directory Operations
 
 bool CreateDir(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) return Android::OperateDocument(path, "", 0);
 #endif
     if (!ValidatePath(path)) {
@@ -220,7 +220,7 @@ bool CreateDir(const fs::path& path) {
 }
 
 bool CreateDirs(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) return Android::OperateDocument(path, "", 0);
 #endif
     if (!ValidatePath(path)) {
@@ -259,7 +259,7 @@ bool CreateParentDirs(const fs::path& path) {
 }
 
 bool RemoveDir(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) return Android::OperateDocument(path, "", 3);
 #endif
     if (!ValidatePath(path)) {
@@ -296,7 +296,7 @@ bool RemoveDir(const fs::path& path) {
 }
 
 bool RemoveDirRecursively(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) return Android::OperateDocument(path, "", 4);
 #endif
     if (!ValidatePath(path)) {
@@ -393,7 +393,7 @@ bool RemoveDirContentsRecursively(const fs::path& path) {
 }
 
 bool RenameDir(const fs::path& old_path, const fs::path& new_path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(old_path) || Android::IsContentUri(new_path))
         return Android::OperateDocument(old_path, new_path, 5);
 #endif
@@ -507,7 +507,7 @@ void IterateDirEntriesRecursively(const std::filesystem::path& path, const DirEn
 
 bool Exists(const fs::path& path) {
     std::error_code ec;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) {
         return Android::Exists(path);
     } else {
@@ -520,7 +520,7 @@ bool Exists(const fs::path& path) {
 
 bool IsFile(const fs::path& path) {
     std::error_code ec;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) {
         return Android::Exists(path) && !Android::IsDirectory(path);
     } else {
@@ -533,7 +533,7 @@ bool IsFile(const fs::path& path) {
 
 bool IsDir(const fs::path& path) {
     std::error_code ec;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) {
         return Android::IsDirectory(path);
     } else {
@@ -586,7 +586,7 @@ fs::file_type GetEntryType(const fs::path& path) {
 }
 
 u64 GetSize(const fs::path& path) {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (Android::IsContentUri(path)) {
         return Android::GetSize(path);
     }

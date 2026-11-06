@@ -13,7 +13,6 @@
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
-#include <openssl/sha.h>
 
 #ifndef _WIN32
 #include <dlfcn.h>
@@ -29,6 +28,7 @@
 #include "core/mods/dsmod_module_extensions.h"
 #include "core/mods/mod_module.h"
 #include "core/mods/mod_package_io.h"
+#include "duo_platform.h"
 
 namespace Core::Mods {
 namespace {
@@ -108,54 +108,8 @@ std::vector<u8> ReadBounded(const FileSys::VirtualFile& file, size_t limit) {
     return std::move(*bytes);
 }
 
-std::string Digest(const std::vector<u8>& bytes) {
-    std::array<unsigned char, SHA256_DIGEST_LENGTH> hash{};
-    SHA256(bytes.data(), bytes.size(), hash.data());
-    std::string result;
-    result.reserve(hash.size() * 2);
-    for (const auto byte : hash) {
-        result += fmt::format("{:02x}", byte);
-    }
-    return result;
-}
-
-void StageModule(const std::vector<u8>& bytes, const std::string& title,
-                 std::filesystem::path& directory) {
-#ifndef _WIN32
-    const auto root = CacheDirectory();
-    std::filesystem::create_directories(root);
-    std::string temporary = (root / "module-XXXXXX").string();
-    if (mkdtemp(temporary.data()) == nullptr) {
-        throw std::runtime_error("cannot create private module staging directory");
-    }
-    directory = temporary;
-    const auto filename = directory / (title + ".so");
-    // The directory is private (0700), and the module is read-only from creation. The open
-    // descriptor can finish writing it; no writable path is ever passed to the dynamic loader.
-    const int fd =
-        open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR);
-    if (fd < 0) {
-        throw std::runtime_error("cannot stage dual-screen module");
-    }
-    size_t offset = 0;
-    while (offset < bytes.size()) {
-        const ssize_t written = write(fd, bytes.data() + offset, bytes.size() - offset);
-        if (written < 0 && errno == EINTR) {
-            continue;
-        }
-        if (written <= 0) {
-            close(fd);
-            throw std::runtime_error("incomplete dual-screen module staging write");
-        }
-        offset += static_cast<size_t>(written);
-    }
-    if (close(fd) != 0) {
-        throw std::runtime_error("cannot finish dual-screen module staging");
-    }
-#else
-    throw std::runtime_error("native dual-screen modules are unsupported on this platform");
-#endif
-}
+// nx2android: no Digest / StageModule: the port builds the title's module from source into the APK's native library folder
+// (duo/build_duo.py), so it is loaded from there (DuoHost::ModulePath) and the package's prebuilt module and its checksum are not used
 } // namespace
 
 void SetModuleCacheDirectory(const std::filesystem::path& directory) {
@@ -242,19 +196,11 @@ std::unique_ptr<GameModule> GameModule::Load(FileSys::VirtualDir assets, u64 tit
         if (entry.at("path").get<std::string>() != expected_path) {
             throw std::runtime_error("invalid title-ID module filename");
         }
-        const auto expected_hash = entry.at("sha256").get<std::string>();
-        const auto bytes = ReadBounded(assets->GetFileRelative(expected_path), MaxNativeModuleBytes);
-        if (!IsHex(expected_hash, 64) || Upper(Digest(bytes)) != Upper(expected_hash)) {
-            throw std::runtime_error("dual-screen module checksum mismatch; reinstall the package");
-        }
         auto loaded = std::unique_ptr<GameModule>{new GameModule};
-        StageModule(bytes, title, loaded->staging_directory);
-        const auto filename = loaded->staging_directory / (title + ".so");
-        if (!loaded->library.Open(filename.string().c_str())) {
-#ifndef _WIN32
+        const auto filename = DuoHost::ModulePath(title_id); // nx2android: built with the port, see above
+        if (!loaded->library.Open(filename.c_str())) {
             const char* detail = dlerror();
             LOG_ERROR(Core, "DSMod module loader: {}", detail ? detail : "unknown loader error");
-#endif
             throw std::runtime_error("cannot load dual-screen module for this device");
         }
         EdenDsmodGetModuleFn entrypoint{};

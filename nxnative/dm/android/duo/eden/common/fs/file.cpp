@@ -11,7 +11,7 @@
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/fs_types.h"
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
 #include "common/fs/fs_android.h"
 #endif
 #include "common/logging.h"
@@ -375,7 +375,7 @@ void IOFile::Open(const fs::path& path, FileAccessMode mode, FileType type, File
             _wfopen_s(&file, path.c_str(), AccessModeToWStr(mode, type));
         }
     }
-#elif __ANDROID__
+#elif 0 // nx2android: __ANDROID__
     if (Android::IsContentUri(path)) {
         if (mode == FileAccessMode::Read) {
             // Upstream: read-only content URIs are mapped (VM page faults); fall back to a read fd.
@@ -531,7 +531,7 @@ u64 IOFile::GetSize() const {
     if (file) {
         // Flush any unwritten buffered data into the file prior to retrieving the file mmap_size.
         std::fflush(file);
-#if __ANDROID__
+#if 0 // nx2android: __ANDROID__
         u64 file_size = 0;
         if (Android::IsContentUri(file_path)) {
             file_size = Android::GetSize(file_path);

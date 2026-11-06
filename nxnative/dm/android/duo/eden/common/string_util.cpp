@@ -18,7 +18,7 @@
 #include <windows.h>
 #endif
 
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
 #include <common/fs/fs_android.h>
 #endif
 
@@ -45,7 +45,7 @@ bool SplitPath(const std::string& full_path, std::string* _pPath, std::string* _
     if (full_path.empty())
         return false;
 
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (full_path[0] != '/') {
         *_pPath = Common::FS::Android::GetParentDirectory(full_path);
         *_pFilename = Common::FS::Android::GetFilename(full_path);

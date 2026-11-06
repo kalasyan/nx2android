@@ -20,6 +20,8 @@
 #include <span>
 
 #include <zlib.h>
+#undef far  // nx2android: zlib's zconf.h defines far/near on Android; mod_input_swipe.h has a variable named far
+#undef near
 
 #include "bc_decoder.h"
 #include "common/logging.h"

@@ -15,7 +15,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/vfs/vfs.h"
-#include "core/hle/service/filesystem/filesystem.h"
+#include "duo_platform.h"
 #include "core/memory.h"
 #include "core/mods/mod_package_io.h"
 #include "core/mods/mod_runtime.h"
@@ -356,7 +356,9 @@ struct SelectedLoadPlanPackage {
 // no package, it needs a newer runtime or it deliberately has no load_plan. JSON type errors
 // propagate to the caller.
 std::optional<SelectedLoadPlanPackage> SelectLoadPlanPackage(System& system, u64 title_id) {
-    auto root = system.GetFileSystemController().GetModificationLoadRoot(title_id);
+    // nx2android: the port's own packages (duo_platform.h)
+    (void)system;
+    auto root = DuoHost::PackageDir();
     if (!root) {
         return std::nullopt;
     }

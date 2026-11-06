@@ -23,7 +23,7 @@
 #define stat _stat64
 #endif
 
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
 #include "common/fs/fs_android.h"
 #endif
 
@@ -297,7 +297,7 @@ RealVfsFile::~RealVfsFile() {
 }
 
 std::string RealVfsFile::GetName() const {
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (path[0] != '/') {
         return FS::Android::GetFilename(path);
     }
@@ -362,7 +362,7 @@ std::vector<VirtualFile> RealVfsDirectory::IterateEntries<RealVfsFile, VfsFile>(
     }
 
     std::vector<VirtualFile> out;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (FS::Android::IsContentUri(path)) {
         for (const auto& entry : FS::Android::ListDocumentEntries(path)) {
             if (!entry.directory) {
@@ -395,7 +395,7 @@ std::vector<VirtualDir> RealVfsDirectory::IterateEntries<RealVfsDirectory, VfsDi
     }
 
     std::vector<VirtualDir> out;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (FS::Android::IsContentUri(path)) {
         for (const auto& entry : FS::Android::ListDocumentEntries(path)) {
             if (entry.directory) out.emplace_back(base.OpenDirectory(path + '/' + entry.name, perms));
@@ -561,7 +561,7 @@ std::map<std::string, VfsEntryType, std::less<>> RealVfsDirectory::GetEntries() 
     }
 
     std::map<std::string, VfsEntryType, std::less<>> out;
-#ifdef __ANDROID__
+#if 0 // nx2android: __ANDROID__ (plain paths, no content URIs)
     if (FS::Android::IsContentUri(path)) {
         for (const auto& entry : FS::Android::ListDocumentEntries(path)) {
             out.insert_or_assign(entry.name,

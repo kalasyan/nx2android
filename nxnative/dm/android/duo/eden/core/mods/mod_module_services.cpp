@@ -17,11 +17,7 @@
 #include "common/logging.h"
 #include "common/uuid.h"
 #include "core/core.h"
-#include "core/file_sys/fs_save_data_types.h"
 #include "core/file_sys/vfs/vfs.h"
-#include "core/hle/service/acc/profile_manager.h"
-#include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/filesystem/save_data_controller.h"
 #include "core/memory.h"
 #include "core/mods/mod_runtime.h"
 #include "video_core/textures/astc.h"
@@ -105,32 +101,10 @@ bool SafeRelativeSavePath(const char* path) {
 
 // Resolves the exact same on-disk location the running title's own save-data HLE calls resolve
 // for its primary (Account-type, User-space, current profile) save -- read-only, never created.
-FileSys::VirtualDir ResolveTitleSaveDirectory(Core::System& system, u64 title_id) {
-    if (title_id == 0)
-        return nullptr;
-    try {
-        const auto save_controller = system.GetFileSystemController().OpenSaveDataController();
-        if (!save_controller)
-            return nullptr;
-        const auto user_id = system.GetProfileManager().GetLastOpenedUser().AsU128();
-        const auto attribute = FileSys::SaveDataAttribute::Make(
-            title_id, FileSys::SaveDataType::Account, user_id, FileSys::InvalidSystemSaveDataId);
-        FileSys::VirtualDir dir;
-        const auto result =
-            save_controller->OpenSaveData(&dir, FileSys::SaveDataSpaceId::User, attribute);
-        // Debug-only: the account UUID folder component is derived from Eden's *global* account
-        // profile store (Service::Account::ProfileManager), not from this title's own isolated
-        // nand_directory -- account identity is OS-level on real hardware, and this fork keeps
-        // that scope here too, so the save path can differ from what a per-title profile alone
-        // would suggest.
-        LOG_DEBUG(Core, "DSMod save-read: title={:016X} user={:016X}{:016X} result={:08X} dir={}",
-                  title_id, user_id[1], user_id[0], result.raw, dir ? "present" : "null");
-        if (result.IsError() || !dir)
-            return nullptr;
-        return dir;
-    } catch (...) {
-        return nullptr;
-    }
+// nx2android: the port keeps the game's save in its own format (saves_android.c), not as a FileSys save directory, so
+// a module's save reads find nothing (no shipped module needs them on this host)
+FileSys::VirtualDir ResolveTitleSaveDirectory(Core::System&, u64) {
+    return nullptr;
 }
 } // namespace
 

@@ -31,7 +31,7 @@
 #include <cstdlib>
 #include "common/logging.h"
 #include "core/core.h"
-#include "core/loader/loader.h"
+#include "duo_platform.h"
 #include "core/mods/map_cache_identity.h"
 #include "core/mods/map_overview.h"
 #include "core/mods/mod_runtime.h"
@@ -763,7 +763,7 @@ std::shared_ptr<const Image> ModRuntime::GetImage(const std::string& src_in,
             return nullptr;
         }
         std::vector<u8> jpeg;
-        system.GetAppLoader().ReadIcon(jpeg);
+        jpeg = DuoHost::GameIconJpeg(); // nx2android: the icon porter keeps in the data pack
         int iw = 0, ih = 0, comps = 0;
         stbi_uc* const rgba =
             jpeg.empty() ? nullptr

@@ -57,6 +57,10 @@ void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t 
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
+// kalasyan fork: the companion runtime on the second screen (android/duo/duo_host.cpp, built into the games that have one; these stand in elsewhere).
+// dm_duo_pad: the buttons and sticks it presses for the game (1 when it presses any); dm_duo_pad_filter: its controller focus, which hides the player's pad
+__attribute__((weak)) int dm_duo_pad(uint64_t *buttons, int32_t *axes) { (void)buttons; (void)axes; return 0; }
+__attribute__((weak)) void dm_duo_pad_filter(uint64_t *buttons, int32_t *axes) { (void)buttons; (void)axes; }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
 //   T<x>x<y> = a touch at normalized picture coordinates (origin top left) for the hold time, and Shake = the controller shaken for the hold time (at least one whole shake);
 //   held 0.15 s by default, at most 1024 steps (counted after repeats are expanded). Goes through player 1's controller path (dm_pad_set), ORed with keyboard / touch, neither overrides the other. Times are counted from host start.
@@ -202,6 +206,12 @@ static int player_of(uint32_t id) {   // the reported player on npad id; -1 when
 static uint32_t style_of(uint32_t id) { return player_of(id) < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
+// Player 1 as the front ends report it (the keyboard / touch path and the controller path, without the companion's): the companion reads it for its focus mode
+void dm_hid_player1(uint64_t *buttons, int32_t *axes) {
+    uint64_t b = atomic_load(&g_btn) | atomic_load(&g_pad_btn[0]), k = atomic_load(&g_axes), v = atomic_load(&g_pad_axes[0]);
+    for (int i = 0; i < 4; i++) axes[i] = pick(ax(k, i), ax(v, i));
+    *buttons = b & 0xffffull;
+}
 
 // Style update events bound per npad (BindNpadStyleSetUpdateEvent, No1..No8 by id): signalled when a player's controller comes or goes, as the hid
 // service does. The front end reports from its own thread, where an event cannot be bound, so only a bound one is signalled (one the game destroyed is not bound any more)
@@ -236,6 +246,11 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
         b |= atomic_load(&g_pad_btn[p]) | atomic_exchange(&g_pad_latch[p], 0);
         uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
+    }
+    if (!pl) {   // kalasyan fork: the second screen's companion (android/duo): its controller focus hides the player's pad, and its own presses are added
+        dm_duo_pad_filter(&b, a);
+        uint64_t cb = 0; int32_t ca[4] = {0};
+        if (dm_duo_pad(&cb, ca)) { b |= cb; for (int i = 0; i < 4; i++) a[i] = pick(a[i], ca[i]); }
     }
     s->lx = a[0]; s->ly = a[1]; s->rx = a[2]; s->ry = a[3];
     b &= 0xffffull;
