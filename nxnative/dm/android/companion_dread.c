@@ -477,6 +477,57 @@ static void icons_draw(page *p, int top, int game) {
     }
 }
 
+// before a save is loaded: the game's logo over Artaria's illustration, darkened (companion/title.nx2t: "NX2T", version 1, the illustration's w, h
+// and RGBA, the logo's w, h and RGBA), composed once for the page's size
+static struct { int tried, bw, bh, lw, lh, pw, ph; uint32_t *bg, *logo, *pic; } g_ti;
+static uint32_t *rgba_read(FILE *f, int *w, int *h) {
+    uint32_t d[2]; if (fread(d, 4, 2, f) != 2 || !d[0] || !d[1] || d[0] > 4096 || d[1] > 4096) return NULL;
+    uint32_t *px = malloc((size_t)d[0] * d[1] * 4); if (!px) return NULL;
+    if (fread(px, 4, (size_t)d[0] * d[1], f) != (size_t)d[0] * d[1]) { free(px); return NULL; }
+    *w = (int)d[0]; *h = (int)d[1]; return px;
+}
+static void title_load(void) {
+    g_ti.tried = 1; const char *root = getenv("DM_ROOT"); char path[700]; uint32_t hd[2];
+    snprintf(path, sizeof path, "%s/companion/title.nx2t", root ? root : ".");
+    FILE *f = fopen(path, "rb"); if (!f) { LOG("[companion] Dread: no %s: text before a save is loaded", path); return; }
+    if (fread(hd, 4, 2, f) == 2 && hd[0] == 0x5432584e /* NX2T */ && hd[1] == 1 && (g_ti.bg = rgba_read(f, &g_ti.bw, &g_ti.bh)) && (g_ti.logo = rgba_read(f, &g_ti.lw, &g_ti.lh)))
+        LOG("[companion] Dread: title page %dx%d, logo %dx%d", g_ti.bw, g_ti.bh, g_ti.lw, g_ti.lh);
+    else { LOG("[RED] [companion] Dread: bad %s", path); free(g_ti.bg); g_ti.bg = NULL; }
+    fclose(f);
+}
+static int title_draw(page *p) {
+    if (!g_ti.tried) title_load();
+    if (!g_ti.bg || !g_ti.logo) return 0;
+    if (!g_ti.pic || g_ti.pw != p->w || g_ti.ph != p->h) {
+        free(g_ti.pic); g_ti.pic = malloc((size_t)p->w * p->h * 4); g_ti.pw = p->w; g_ti.ph = p->h; if (!g_ti.pic) return 0;
+        float k = fmaxf((float)p->w / g_ti.bw, (float)p->h / g_ti.bh), ox = (g_ti.bw - p->w / k) / 2, oy = (g_ti.bh - p->h / k) / 2;   // the illustration covers the page
+        for (int y = 0; y < p->h; y++) {
+            float dk = 0.42f * (1 - 0.6f * fabsf((float)y / p->h - 0.4f));   // darker at the top and the bottom
+            int sy = (int)(oy + y / k); if (sy < 0) sy = 0; if (sy >= g_ti.bh) sy = g_ti.bh - 1;
+            for (int x = 0; x < p->w; x++) {
+                int sx = (int)(ox + x / k); if (sx < 0) sx = 0; if (sx >= g_ti.bw) sx = g_ti.bw - 1;
+                uint32_t c = g_ti.bg[(size_t)sy * g_ti.bw + sx], r = 0xff000000u;
+                for (int sh = 0; sh < 24; sh += 8) r |= (uint32_t)(((c >> sh) & 255) * dk) << sh;
+                g_ti.pic[(size_t)y * p->w + x] = r;
+            }
+        }
+        float lw = p->w * 0.72f, lh = lw * g_ti.lh / g_ti.lw, lx = (p->w - lw) / 2, ly = p->h * 0.36f - lh / 2;   // the logo
+        for (int y = (int)ly; y < (int)(ly + lh); y++) {
+            if (y < 0 || y >= p->h) continue;
+            int sy = (int)((y - ly) / lh * g_ti.lh); if (sy >= g_ti.lh) sy = g_ti.lh - 1;
+            for (int x = (int)lx; x < (int)(lx + lw); x++) {
+                if (x < 0 || x >= p->w) continue;
+                int sx = (int)((x - lx) / lw * g_ti.lw); if (sx >= g_ti.lw) sx = g_ti.lw - 1;
+                uint32_t c = g_ti.logo[(size_t)sy * g_ti.lw + sx], *d = &g_ti.pic[(size_t)y * p->w + x], o = *d, r = 0xff000000u; unsigned a = c >> 24;
+                for (int sh = 0; sh < 24; sh += 8) r |= ((((c >> sh) & 255) * a + ((o >> sh) & 255) * (255 - a)) / 255) << sh;
+                *d = r;
+            }
+        }
+    }
+    for (int y = 0; y < p->h; y++) memcpy(p->px + (size_t)y * p->stride, g_ti.pic + (size_t)y * p->w, (size_t)p->w * 4);
+    return 1;
+}
+
 int dm_dread_draw(page *p) {
     if (!dm_dread_active()) return 0;
     static int pal; if (!pal) { pal_init(); pal = 1; }
@@ -485,6 +536,7 @@ int dm_dread_draw(page *p) {
     int m = 3 * s, top = head_h(s);
     int area = g_tab && g_st.area > 0 && g_st.area < NAREA ? g_st.area : 0;
     if (!area) {
+        if (title_draw(p)) return 1;
         fill(p, 0, 0, p->w, p->h, C_BG); text(p, m, m, s, 0xffffffff, "METROID DREAD"); fill(p, 0, 2 * m + 7 * s - 1, p->w, 2 * m + 7 * s, mix(C_BG, C_LINE, 0.35f));
         text(p, m, 2 * m + 7 * s + 2 * m, s, 0xffb0b0b0, g_ncand ? "Buscando a Samus..." : "El mapa sale al entrar en una zona");
         return 1;
