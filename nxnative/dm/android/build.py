@@ -68,6 +68,16 @@ if BELMONT:   # the package's layout, embedded: gen/<game>/belmont_manifest.c
         mc.write_text(f'// generated from dm/android/belmont/manifest.json by build.py\nconst unsigned char belmont_manifest_json[] = {{\n{body},0}};\nconst unsigned belmont_manifest_json_len = {len(data)};\n')
     BELMONT.append(mc)
 
+# The games with an Eden Duo package (duo/titles.tsv, kalasyan fork): Eden Duo's dual-screen runtime and duo_host.cpp in libdmhost.so, and the title's
+# module as libdsmod<title ID>.so beside it (the APK carries both: porter's pipeline.py)
+DU = DM / 'android/duo'
+DUO_PKG = {l.split('\t')[0].upper(): l.split('\t')[1].strip() for l in (DU / 'titles.tsv').read_text().splitlines() if l.strip() and not l.startswith('#')}.get(a.game.upper())
+DUO = ([p for p in srcs('android/duo/eden/core/mods/*.cpp') if p.name not in ('mod_console.cpp', 'mod_re_tools.cpp')]   # the dev tools are off (EDEN_DSMOD_BUILD_DEV_TOOLS=0)
+       + srcs('android/duo/eden/common/*.cpp', 'android/duo/eden/common/fs/*.cpp') + [DU / f'eden/core/file_sys/vfs/{n}.cpp' for n in ('vfs', 'vfs_vector', 'vfs_offset', 'vfs_real')]
+       + [DU / 'third_party/astc.cpp', DU / 'third_party/bc_decoder/bc_decoder.cpp', DU / 'duo_host.cpp']) if DUO_PKG else []
+DUO_MOD = (srcs('android/duo/module/*.cpp') + [DU / f'third_party/zstd/{n}.c' for n in ('common/entropy_common', 'common/error_private', 'common/fse_decompress', 'common/xxhash',
+           'common/zstd_common', 'decompress/huf_decompress', 'decompress/zstd_ddict', 'decompress/zstd_decompress', 'decompress/zstd_decompress_block')]) if DUO_PKG else []
+
 INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 CFLAGS = [TARGET, f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
@@ -78,10 +88,16 @@ ZSTD_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB
 
 CXX = str(bin_ / ('clang++.exe' if os.name == 'nt' else 'clang++'))
 BL = DM / 'android/belmont'
+DUO_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-D_GNU_SOURCE', '-DNDEBUG', '-w', '-fexperimental-library', '-DFMT_HEADER_ONLY',
+             '-DEDEN_DSMOD_BUILD_DEV_TOOLS=0', f'-DDUO_TITLE=0x{a.game.upper()}ULL', f'-DDUO_PACKAGE={DUO_PKG}', f'-I{DU / "shim"}', f'-I{DU / "eden"}', f'-I{DU / "third_party"}',
+             f'-I{DU / "third_party/stb"}', f'-I{DU / "third_party/bc_decoder"}', f'-I{DM / "android"}']
+DUO_MOD_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-DNDEBUG', '-w', '-DEDEN_ACNH_DIAGNOSTICS=0', '-DZSTD_DISABLE_ASM=1', '-DZSTD_MULTITHREAD=0',
+                 '-DXXH_NAMESPACE=DUO_', f'-I{DU / "eden"}', f'-I{DU / "module"}', f'-I{DU / "third_party/stb"}', f'-I{DU / "third_party/bc_decoder"}', f'-I{DU / "third_party/zstd"}']
+DUO_NO_FMA = ('acnh_draw.cpp', 'acnh_lyt.cpp', 'acnh_ui_bg.cpp', 'acnh_ui_pages.cpp')   # the module's art recipes: no fused multiply-add (its CMakeLists.txt)
 BELMONT_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-ffixed-x18', '-fvisibility=hidden', '-D_GNU_SOURCE', '-DNDEBUG', '-w', f'-I{BL / "eden"}', f'-I{BL / "third_party"}', f'-I{BL / "module"}', f'-I{BL}', f'-I{DM / "android"}']
 
 import hashlib, shutil
-_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, BELMONT_FLAGS, CC)).encode()).hexdigest()
+_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, BELMONT_FLAGS, DUO_FLAGS, DUO_MOD_FLAGS, CC)).encode()).hexdigest()
 if not _stamp.exists() or _stamp.read_text() != _flags:   # compiler flags changed: every object is rebuilt
     shutil.rmtree(obj, ignore_errors=True); obj.mkdir(parents=True, exist_ok=True); _stamp.write_text(_flags)
 
@@ -103,6 +119,11 @@ def compile_one(s):
         if not src.exists() or src.stat().st_mtime < s.stat().st_mtime:
             subprocess.run([sys.executable, str(DM / 'android/tools/darwin2elf.py'), str(s), str(src)], check=True)
     if not dep_stale(o, d, src): return s, o, 0, ''
+    if s in DUO or s in DUO_MOD:   # C++20, or plain C (zstd)
+        cpp = s.suffix == '.cpp'
+        fl = (DUO_FLAGS if s in DUO else DUO_MOD_FLAGS) + (['-std=c++20'] if cpp else []) + (['-ffp-contract=off'] if s.name in DUO_NO_FMA else [])
+        r = subprocess.run([CXX if cpp else CC] + fl + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
+        return s, o, r.returncode, r.stderr
     if s in BELMONT:   # C++20 (the module), or plain C (lz4, the manifest)
         cc = CXX if s.suffix == '.cpp' else CC
         r = subprocess.run([cc] + BELMONT_FLAGS + (['-std=c++20'] if s.suffix == '.cpp' else []) + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
@@ -122,9 +143,10 @@ def build(files):
 
 all_files = HOST + GFX + PORT + ASM
 objs, failed = build(all_files)
-vobjs, vfailed = build(VPX + ZSTD + BELMONT)
-failed += vfailed
-print(f'compiled {len(all_files) + len(VPX) + len(ZSTD) + len(BELMONT)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
+vobjs, vfailed = build(VPX + ZSTD + BELMONT + DUO)
+mobjs, mfailed = build(DUO_MOD)
+failed += vfailed + mfailed
+print(f'compiled {len(all_files) + len(VPX) + len(ZSTD) + len(BELMONT) + len(DUO) + len(DUO_MOD)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
@@ -132,6 +154,7 @@ LIBS = ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmedia
 LDFLAGS = [TARGET, '-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc']
 LD = CC
 if BELMONT: LD = CXX; LDFLAGS += ['-static-libstdc++']   # the C++ runtime inside libdmhost.so (the APK carries no libc++_shared.so)
+if DUO: LD = CXX; LDFLAGS += ['-static-libstdc++', '-fexperimental-library']   # std::jthread (Eden's threads)
 if a.exe:
     r = subprocess.run([LD] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
     print(r.stderr.strip() if r.returncode else f'linked {out / "dmhost"}', file=sys.stderr if r.returncode else sys.stdout)
@@ -140,6 +163,15 @@ if a.lib:
     r = subprocess.run([LD] + LDFLAGS + ['-shared', '-Wl,-soname,libdmhost.so', '-o', str(out / 'libdmhost.so')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
     print(r.stderr.strip() if r.returncode else f'linked {out / "libdmhost.so"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
+    if DUO_MOD:   # the title's companion module, which the runtime loads beside libdmhost.so (duo_host.cpp DuoHost::ModulePath); bc_decoder is the runtime's object
+        exp = out / 'dsmod.exports'; exp.write_text('{\n global:\n' + ''.join(f'  eden_dsmod_get_{n};\n' for n in ('module', 'extensions', 'font_extensions', 'data_extensions', 'write_extensions')) + ' local: *;\n};\n')
+        mso = out / f'libdsmod{a.game.upper()}.so'
+        bc = [o for s, o in zip(DUO, vobjs[len(VPX) + len(ZSTD) + len(BELMONT):]) if s.name == 'bc_decoder.cpp']
+        r = subprocess.run([CXX, TARGET, '-fuse-ld=lld', '-shared', '-static-libstdc++', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,--no-undefined', f'-Wl,--version-script={exp}',
+                            f'-Wl,-soname,{mso.name}', '-o', str(mso)] + [str(o) for o in mobjs + bc] + ['-llog', '-lm'], capture_output=True, text=True, errors='replace')
+        print(r.stderr.strip() if r.returncode else f'linked {mso}', file=sys.stderr if r.returncode else sys.stdout)
+        if r.returncode: sys.exit(1)
+        if a.release: subprocess.run([str(bin_ / ('llvm-strip.exe' if os.name == 'nt' else 'llvm-strip')), '--strip-unneeded', str(mso)], check=True)
     if a.release:   # the static symbol table goes too (the dynamic one stays: ANativeActivity_onCreate)
         subprocess.run([str(bin_ / ('llvm-strip.exe' if os.name == 'nt' else 'llvm-strip')), '--strip-unneeded', str(out / 'libdmhost.so')], check=True)
         print(f'stripped {out / "libdmhost.so"}: {(out / "libdmhost.so").stat().st_size // 1024} KB')

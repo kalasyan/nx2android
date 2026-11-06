@@ -701,7 +701,7 @@ class Port:
             say(f'--vulkan-driver: {self.o.vulkan_driver.name} is packed as {driver.name} (Android extracts only lib*.so libraries)')
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + external + ([] if self.o.debug else ['--release'])
+                + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + self.duo() + external + ([] if self.o.debug else ['--release'])
                 + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
@@ -722,6 +722,24 @@ class Port:
         nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / 'android_external_java.log', env=self.env)
         nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / 'android_external_dex.log', env=self.env)
         return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.ExternalActivity']
+
+    def duo(self):
+        """kalasyan fork: a game with an Eden Duo package (dm/android/duo/titles.tsv) carries its second-screen companion: the title's module
+        (build.py's libdsmod<title ID>.so, beside libdmhost.so) and the package's files as assets/duo/ with an index (duo_host.cpp unpacks them)"""
+        so = self.so.parent / f'libdsmod{self.g.id.upper()}.so'
+        titles = DM / 'android/duo/titles.tsv'
+        rows = dict(l.split('\t')[:2] for l in titles.read_text().splitlines() if l.strip() and not l.startswith('#')) if titles.is_file() else {}
+        package = rows.get(self.g.id.upper(), '').strip()
+        if not package or not so.is_file(): return []
+        root = DM / 'android/duo/package'
+        files = sorted(f for f in (root / package).rglob('*') if f.is_file())
+        import hashlib
+        h = hashlib.sha256()
+        for f in files: h.update(f.relative_to(root).as_posix().encode()); h.update(f.read_bytes())
+        index = self.aw / 'duo-index.txt'
+        index.write_text(h.hexdigest()[:32] + '\n' + ''.join(f.relative_to(root).as_posix() + '\n' for f in files))
+        self.result['companion'] = package; say(f'second-screen companion: {package} (Eden Duo package, {len(files)} files) and {so.name}')
+        return ['--extra-so', str(so), '--asset', f'duo/index.txt={index}'] + [a for f in files for a in ('--asset', f'duo/{f.relative_to(root).as_posix()}={f}')]
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row

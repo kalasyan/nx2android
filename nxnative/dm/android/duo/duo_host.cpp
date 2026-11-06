@@ -29,7 +29,11 @@
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#ifdef __ANDROID__
 #include <android/asset_manager.h>
+#else
+typedef struct AAssetManager AAssetManager;   // duo_shot.cpp on a desktop: no APK, the package is already unpacked
+#endif
 
 #include "common/device_power_state.h"
 #include "common/fs/path_util.h"
@@ -150,10 +154,12 @@ bool mkdirs(const std::string& p) {
     return std::filesystem::is_directory(p, e);
 }
 
-// the package out of the APK's assets: assets/duo/<package>/... (pipeline.py lists every file in assets/duo/index.txt) into <state>/packages
+// the package out of the APK's assets: assets/duo/<package>/dualscreen/... (pipeline.py lists every file in assets/duo/index.txt) into dst = <state>/packages
 bool unpack_package(const std::string& dst) {
     AAssetManager* am = dm_front_assets();
-    if (!am) return false;
+    std::error_code ec;
+    if (!am) return std::filesystem::is_regular_file(dst + "/" DUO_STR(DUO_PACKAGE) "/dualscreen/manifest.json", ec);   // no APK (duo_shot.cpp): a package put there by hand
+#ifdef __ANDROID__
     AAsset* idx = AAssetManager_open(am, "duo/index.txt", AASSET_MODE_BUFFER);
     if (!idx) { logf("[RED] no duo/index.txt in the APK's assets: the companion's package is missing"); return false; }
     std::string list(static_cast<const char*>(AAsset_getBuffer(idx)), static_cast<size_t>(AAsset_getLength(idx)));
@@ -191,6 +197,9 @@ bool unpack_package(const std::string& dst) {
     if (FILE* f = fopen(stamp.c_str(), "w")) { fwrite(version.data(), 1, version.size(), f); fclose(f); }
     logf("package unpacked: %zu files into %s", files, dst.c_str());
     return true;
+#else
+    return false;
+#endif
 }
 
 std::array<u8, 0x20> build_bytes(const std::string& hex) {
@@ -214,8 +223,9 @@ void start() {
             g_state_dir = (save.empty() ? g_root : save.substr(0, save.rfind('/'))) + "/duo";
             mkdirs(g_state_dir);
             Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, g_state_dir);
+            mkdirs(g_state_dir + "/cache");
             Common::FS::SetEdenPath(Common::FS::EdenPath::CacheDir, g_state_dir + "/cache");
-            if (!unpack_package(g_state_dir + "/packages/" DUO_STR(DUO_PACKAGE))) { g_state = -1; return; }
+            if (!unpack_package(g_state_dir + "/packages")) { g_state = -1; return; }
             auto& sys = Core::System::GetInstance();
             g_aux.present.store(true);
             g_aux.width.store(1240);
@@ -463,6 +473,7 @@ FileSys::VirtualDir AocRomfs() {
 FileSys::VirtualDir PackageDir() { return Dir(g_state_dir + "/packages"); }
 std::filesystem::path StateDir() { return g_state_dir; }
 std::string ModulePath(u64 title_id) {
+    if (const char* m = getenv("DM_DUO_MODULE"); m && *m) return m;   // a test run (duo_shot.cpp)
     // beside libdmhost.so: the APK's extracted native libraries
     Dl_info di{};
     std::string dir = ".";

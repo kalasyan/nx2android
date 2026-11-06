@@ -7,7 +7,8 @@
 // Touches on the page reach dm_dread_touch through org.nx2a.CompanionTouch, a View.OnTouchListener in a dex made by hand (tools/companion_dex.py) and
 // loaded with InMemoryDexClassLoader, whose onTouch is on_touch below.
 // The page is a test card (the screen, the game's frame rate, the time played), Metroid Dread's map (companion_dread.c), or Castlevania: Belmont's
-// Curse's companion (belmont/belmont_host.cpp, built into that game's host only: the weak stubs below stand in elsewhere).
+// Curse's companion (belmont/belmont_host.cpp, built into that game's host only: the weak stubs below stand in elsewhere), or the companion of a game with an
+// Eden Duo package (duo/duo_host.cpp: Eden Duo's own runtime, Animal Crossing: New Horizons).
 #include "dm.h"
 #include "font5x7.h"
 #include "companion.h"
@@ -29,6 +30,11 @@ __attribute__((weak)) int dm_belmont_active(void) { return 0; }
 __attribute__((weak)) void dm_belmont_tick(void) {}
 __attribute__((weak)) int dm_belmont_draw(page *p) { (void)p; return 0; }
 __attribute__((weak)) void dm_belmont_touch(int action, int index, int n, const float *x, const float *y) { (void)action; (void)index; (void)n; (void)x; (void)y; }
+// The games with an Eden Duo package (duo/titles.tsv): Eden Duo's dual-screen runtime and the title's module (duo/duo_host.cpp, built into those games' host only)
+__attribute__((weak)) int dm_duo_active(void) { return 0; }
+__attribute__((weak)) void dm_duo_tick(void) {}
+__attribute__((weak)) int dm_duo_draw(page *p) { (void)p; return 0; }
+__attribute__((weak)) void dm_duo_touch(int action, int index, int n, const float *x, const float *y) { (void)action; (void)index; (void)n; (void)x; (void)y; }
 // main's image and build for belmont_host.cpp (C++, without dm.h); 0 while the modules are not loaded yet
 int dm_companion_main_module(uint8_t **base, size_t *size, const char **build) {
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { if (!g_mod[i].build_id[0]) return 0; *base = g_mod[i].base; *size = g_mod[i].size; *build = g_mod[i].build_id; return 1; }
@@ -55,6 +61,7 @@ void text(page *p, int x, int y, int s, uint32_t c, const char *t) {   // s = th
 static void draw(page *p, int fps, int64_t secs) {
     if (dm_dread_draw(p)) return;   // Metroid Dread: its map (companion_dread.c)
     if (dm_belmont_draw(p)) return; // Castlevania: Belmont's Curse: its companion (belmont/belmont_host.cpp)
+    if (dm_duo_draw(p)) return;     // a game with an Eden Duo package: its companion (duo/duo_host.cpp)
     fill(p, 0, 0, p->w, p->h, 0xff201010);
     // a font dot sized so that 28 characters fit the width and 16 lines the height (the Thor's bottom screen: 1240x1080, 7 px dots)
     int s = p->w / (6 * 28 + 6); if (s > p->h / (11 * 16)) s = p->h / (11 * 16); if (s < 2) s = 2;
@@ -75,8 +82,8 @@ static void *companion_thread(void *a) {
     jmethodID mSurf = cH ? (*E)->GetMethodID(E, cH, "getSurface", "()Landroid/view/Surface;") : NULL, mValid = cS ? (*E)->GetMethodID(E, cS, "isValid", "()Z") : NULL;
     if (jx(E) || !mSurf || !mValid) { LOG("[RED] [companion] SurfaceHolder methods missing"); return NULL; }
     ANativeWindow *win = NULL; int64_t t0 = page_ns(), tf = t0; uint64_t f0 = dm_frames_shown(); int fps = -1, logged = 0;
-    for (;; usleep(dm_dread_active() ? 66000 : dm_belmont_active() ? 25000 : 500000)) {   // the map follows the player at 15 fps (Dread) or about 30 (Castlevania)
-        dm_dread_tick(); dm_belmont_tick();
+    for (;; usleep(dm_dread_active() ? 66000 : dm_belmont_active() ? 25000 : dm_duo_active() ? 16000 : 500000)) {   // the map follows the player at 15 fps (Dread), about 30 (Castlevania), 60 (Eden Duo's runtime)
+        dm_dread_tick(); dm_belmont_tick(); dm_duo_tick();
         int64_t t = page_ns(); uint64_t f = dm_frames_shown();
         if (t - tf >= 1000000000) { fps = (int)((f - f0) * 1000000000 / (uint64_t)(t - tf)); f0 = f; tf = t; }
         if (atomic_load(&g_hidden)) continue;
@@ -101,7 +108,7 @@ static jboolean JNICALL on_touch(JNIEnv *E, jobject self, jobject v, jobject ev)
     if (n > 2) n = 2;
     for (int i = 0; i < n; i++) { x[i] = (*E)->CallFloatMethod(E, ev, g_evX, i); y[i] = (*E)->CallFloatMethod(E, ev, g_evY, i); }
     if (jx(E)) return JNI_TRUE;
-    dm_dread_touch(act, idx, n, x, y); dm_belmont_touch(act, idx, n, x, y); return JNI_TRUE;
+    dm_dread_touch(act, idx, n, x, y); dm_belmont_touch(act, idx, n, x, y); dm_duo_touch(act, idx, n, x, y); return JNI_TRUE;
 }
 static void touch_listen(JNIEnv *E, ANativeActivity *act, jobject sv) {   // sv.setOnTouchListener(a CompanionTouch); without it the page only shows
     jclass cO = (*E)->FindClass(E, "java/lang/Object"), cCL = (*E)->FindClass(E, "java/lang/ClassLoader"), cIM = (*E)->FindClass(E, "dalvik/system/InMemoryDexClassLoader");
