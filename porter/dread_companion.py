@@ -3,6 +3,7 @@
 #                                   triangles, the water/heat/freeze/EMMI rooms, the doors, items, stations... with their map icons, in the game's
 #                                   world units (nxnative/dm/android/companion_dread.c draws them)
 #   companion/icons.nx2i            the game's map icons (textures/system/minimap/icons/icons.bctex), decoded
+#   companion/title.nx2t            the game's logo and Artaria's illustration, for the page before a save is loaded
 #   RomFS/packs/system/system.pkg   the game's scripts with system/scripts/scenario.lc wrapped: the wrapper runs the original (kept as
 #                                   nx2a_scenario_original.lc) and keeps a Lua table with Samus's area, position, energy and missiles up to date every
 #                                   frame, which the host finds in memory (companion_dread.c)
@@ -297,6 +298,55 @@ def find_asset(romfs, path):   # a RomFS file, loose or in one of the packs
     return None
 
 
+# ---- the page before a save is loaded: the game's logo over an area's illustration ----
+# The illustrations (textures/gui/textures/ir_<area>.bctex, 2048x1024) fill the top-left of the texture and leave the rest white; the logo is only in
+# the gallery's er_dread.bctex, cropped (with soft edges) so that none of that picture shows. Written as companion/title.nx2t: "NX2T", version 1,
+# the background (u32 w, h, RGBA) and the logo (u32 w, h, RGBA).
+TITLE_BG = 'textures/gui/textures/ir_cave.bctex'
+TITLE_LOGO = 'textures/gui/textures/er_dread.bctex'
+LOGO_RECT = (1070, 20, 1580, 215)   # x0 y0 x1 y1 in er_dread, full size
+FEATHER = 18
+LOGO_KEY = (60, 130)   # luminance: below the first, not drawn; above the second, drawn whole
+
+
+def _content(tex, step=8):   # the part of an illustration that is not the white padding
+    def ink(x, y): r, g, b, a = tex.get(x, y); return a > 16 and min(r, g, b) < 240
+    xs = [x for x in range(0, tex.w, step) if any(ink(x, y) for y in range(0, tex.h, step * 4))]
+    ys = [y for y in range(0, tex.h, step) if any(ink(x, y) for x in range(0, tex.w, step * 4))]
+    if not xs or not ys: return 0, 0, tex.w, tex.h
+    x1, y1 = min(tex.w, xs[-1] + step), min(tex.h, ys[-1] + step)
+    while x1 > xs[-1] + 1 and not any(ink(x1 - 1, y) for y in range(ys[0], y1, 2)): x1 -= 1
+    while y1 > ys[-1] + 1 and not any(ink(x, y1 - 1) for x in range(xs[0], x1, 2)): y1 -= 1
+    return xs[0], ys[0], x1, y1
+
+
+def _crop(tex, rect, width, feather=0):   # rect of tex scaled to width pixels across (box filtered), RGBA bytes; feather: alpha fading at the edges
+    x0, y0, x1, y1 = rect; f = (x1 - x0) / width; h = max(1, round((y1 - y0) / f)); out = bytearray()
+    n = max(1, int(f)); fe = feather / f if feather else 0
+    for j in range(h):
+        for i in range(width):
+            sx, sy = x0 + i * f, y0 + j * f; acc = [0, 0, 0, 0]
+            for b in range(n):
+                for a in range(n):
+                    p = tex.get(min(x1 - 1, int(sx) + a), min(y1 - 1, int(sy) + b))
+                    for c in range(4): acc[c] += p[c]
+            px = [v // (n * n) for v in acc]
+            if fe:
+                d = min(i, j, width - 1 - i, h - 1 - j); px[3] = px[3] * min(1.0, d / fe) if d < fe else px[3]
+            out += bytes(int(v) for v in px)
+    return width, h, bytes(out)
+
+
+def title_nx2t(bg, logo, width=1280):
+    w, h, px = _crop(bg, _content(bg), width)
+    out = bytearray(b'NX2T' + struct.pack('<III', 1, w, h)) + px
+    lw, lh, lp = _crop(logo, LOGO_RECT, 640, FEATHER); lp = bytearray(lp)
+    for i in range(0, len(lp), 4):   # the picture behind the letters is dark: keep the bright pixels (the letters) and fade the rest out
+        lum = (lp[i] * 3 + lp[i + 1] * 6 + lp[i + 2]) / 10; k = min(1.0, max(0.0, (lum - LOGO_KEY[0]) / (LOGO_KEY[1] - LOGO_KEY[0])))
+        lp[i + 3] = int(lp[i + 3] * k)
+    return bytes(out + struct.pack('<II', lw, lh) + lp)
+
+
 LAYERS = ('mapWaterPoolGeos', 'mapHeatRoomGeos', 'mapFreezeRoomGeos', 'mapEmmyRoomGeos')   # companion_dread.c draws them in this order
 F_BOX, F_FLIPX, F_FLIPY, F_DOOR, F_ITEM = 1, 2, 4, 8, 16
 _BIG = 1e30
@@ -382,6 +432,11 @@ def make(folder, out=None, log=print):
     else:
         try: (out / 'companion' / 'icons.nx2i').write_bytes(icons_nx2i(Texture(atlas))); log(f'  {len(ICONS)} map icons from {ICON_ATLAS}')
         except ValueError as e: log(f'  {ICON_ATLAS}: {e}: the page draws plain shapes for the icons')
+    bg, logo = find_asset(romfs, TITLE_BG), find_asset(romfs, TITLE_LOGO)
+    if bg is None or logo is None: log(f'  no {TITLE_BG if bg is None else TITLE_LOGO}: the page shows text before a save is loaded')
+    else:
+        try: (out / 'companion' / 'title.nx2t').write_bytes(title_nx2t(Texture(bg), Texture(logo))); log('  the logo and an illustration for the page before a save is loaded')
+        except ValueError as e: log(f'  the title page: {e}: the page shows text before a save is loaded')
     sc, orig = crc64(SCENARIO), crc64(ORIGINAL)
     if orig in by_id: raise SystemExit(f'{pkg_path} is already wrapped: give the original RomFS')
     if sc not in by_id: raise SystemExit(f'{SCENARIO} is not in {pkg_path}')

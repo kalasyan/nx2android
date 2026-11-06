@@ -52,3 +52,14 @@ def test_icons_and_map():
     assert icons[0][:2] == (d.ICON_NAMES.index('DoorPowerL'), d.F_BOX | d.F_DOOR) and icons[0][4:] == (80, 0, 100, 100)
     assert icons[1][4:] == (100, 0, 120, 100)
     assert icons[2][:4] == (d.ICON_NAMES.index('ItemMissileTank'), d.F_ITEM, 300, 60)
+
+
+def test_title():
+    def px(x, y): return bytes((250, 200, 200, 255)) if x < 1600 and y < 900 else bytes((255, 255, 255, 255))
+    bg = d.Texture(bctex(2048, 1024, 0x25, 4, 4, 1, px))
+    assert d._content(bg)[2:] == (1600, 900)
+    out = d.title_nx2t(bg, bg, width=160)
+    w, h = struct.unpack_from('<II', out, 8); assert (w, h) == (160, 90)
+    at = 16 + w * h * 4; lw, lh = struct.unpack_from('<II', out, at); assert lw == 640
+    a = out[at + 8 + 3]; mid = out[at + 8 + ((lh // 2) * lw + lw // 2) * 4 + 3]
+    assert a == 0 and mid == 255
